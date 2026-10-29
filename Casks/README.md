@@ -6,6 +6,7 @@ notarization, stapling, Gatekeeper validation, and final archive checksum checks
 
 ```sh
 brew tap hardworker/hermes-light https://github.com/hardworker/hermes-light
+brew trust --cask hardworker/hermes-light/hermes-light
 brew install --cask hardworker/hermes-light/hermes-light
 ```
 

@@ -8,7 +8,7 @@ cask "hermes-light" do
   homepage "https://github.com/hardworker/hermes-light"
 
   depends_on arch: :arm64
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "Hermes Light bf0203a.app", target: "Hermes Light.app"
 

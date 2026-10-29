@@ -16,10 +16,13 @@ Developer ID signed, notarized by Apple, and distributed with a stapled ticket.
 
 ```sh
 brew tap hardworker/hermes-light https://github.com/hardworker/hermes-light
+brew trust --cask hardworker/hermes-light/hermes-light
 brew install --cask hardworker/hermes-light/hermes-light
 ```
 
-Both commands use this public repository, `hardworker/hermes-light`.
+These commands use this public repository, `hardworker/hermes-light`.
+The trust step authorizes only this cask; older Homebrew versions without
+`brew trust` can skip that line.
 Client installation requires no GitHub login. The cask is generated only after
 Apple accepts the package and its ticket and Gatekeeper checks pass.
 
