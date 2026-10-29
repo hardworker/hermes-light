@@ -1,0 +1,35 @@
+name: Validate client release tooling
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check release boundaries
+        run: python -m unittest discover -s tests -v
+      - name: Validate Python and signing adapter
+        run: |
+          python -m py_compile scripts/light_client_release.py
+          node --check packaging/sign-app.mjs
+      - name: Check secrets and shell syntax
+        run: |
+          bash -n scripts/check-secrets.sh
+          bash scripts/check-secrets.sh
+      - name: Validate published cask syntax when present
+        run: |
+          if [ -f Casks/hermes-light.rb ]; then ruby -c Casks/hermes-light.rb; fi

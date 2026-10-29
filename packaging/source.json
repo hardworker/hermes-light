@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/NousResearch/hermes-agent.git",
+  "tag": "v0.22.5",
+  "commit": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+  "version": "0.22.5",
+  "revision": 1,
+  "target": "darwin-arm64",
+  "distribution_repository": "hardworker/homebrew-hermes-light"
+}
