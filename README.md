@@ -9,11 +9,10 @@ Hermes gateway and delegates app updates to Homebrew. This distribution is
 independently maintained; Nous Research does not publish or sign this package.
 Apple Silicon and macOS 13 or newer are supported.
 
-**Release status:** the native client candidate has been built. Developer ID
-certificate setup and Apple notarization are pending. No installable cask or
-notarized release has been published yet.
+**Current release:** [Hermes Light 0.22.5 revision 1](https://github.com/hardworker/hermes-light/releases/tag/hermes-light-v0.22.5-r1),
+Developer ID signed, notarized by Apple, and distributed with a stapled ticket.
 
-## Install after the first notarized release
+## Install
 
 ```sh
 brew tap hardworker/hermes-light https://github.com/hardworker/hermes-light
@@ -60,7 +59,7 @@ This creates a private RSA key (0600) and public certificate request in
 must match it. Never upload the private key to Apple, GitHub or chat.
 
 In [Apple Developer Certificates](https://developer.apple.com/account/resources/certificates/add),
-create **Developer ID Application** using
+create **Developer ID Application**, selecting **G2 Sub-CA** when asked, using
 `secrets/apple-signing/hermes-light.certSigningRequest`. Save the returned
 certificate as `secrets/apple-signing/developerID_application.cer`, then run:
 
