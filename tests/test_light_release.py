@@ -56,7 +56,7 @@ class LightReleaseTests(unittest.TestCase):
         manifest = self.manifest()
         cask = release.cask_text(manifest, self.config)
         self.assertIn(manifest["sha256"], cask)
-        self.assertIn('https://github.com/hardworker/homebrew-hermes-light/releases/download/hermes-light-v0.22.5-r1/', cask)
+        self.assertIn('https://github.com/hardworker/hermes-light/releases/download/hermes-light-v0.22.5-r1/', cask)
         self.assertIn('target: "Hermes Light.app"', cask)
         self.assertNotIn("no_check", cask)
         self.assertNotIn("DownloadStrategy", cask)

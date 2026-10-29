@@ -16,11 +16,11 @@ notarized release has been published yet.
 ## Install after the first notarized release
 
 ```sh
-brew tap hardworker/hermes-light
+brew tap hardworker/hermes-light https://github.com/hardworker/hermes-light
 brew install --cask hardworker/hermes-light/hermes-light
 ```
 
-Both commands use this public repository, `hardworker/homebrew-hermes-light`.
+Both commands use this public repository, `hardworker/hermes-light`.
 Client installation requires no GitHub login. The cask is generated only after
 Apple accepts the package and its ticket and Gatekeeper checks pass.
 

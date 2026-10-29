@@ -5,5 +5,5 @@
   "version": "0.22.5",
   "revision": 1,
   "target": "darwin-arm64",
-  "distribution_repository": "hardworker/homebrew-hermes-light"
+  "distribution_repository": "hardworker/hermes-light"
 }
