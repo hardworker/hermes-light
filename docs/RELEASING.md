@@ -43,6 +43,12 @@ CLI. CI setup does not request a recovery password:
 - `APPLE_NOTARY_TEAM_ID`
 - `APPLE_NOTARY_PASSWORD`
 
+When the identity exists only in Keychain, setup exports exactly the selected
+Developer ID identity into an encrypted temporary file. macOS may request
+permission in its native Keychain dialog. No export is started until you run
+the setup command. Temporary files are removed afterward. With multiple
+identities, `HERMES_LIGHT_SIGNING_IDENTITY` selects one fingerprint.
+
 ## Optional portable recovery backup
 
 The existing local Keychain identity and `hermes-light-notary` profile remain
@@ -54,15 +60,18 @@ python3 scripts/setup_ci.py --backup-only
 ```
 
 The optional encrypted backup lives in
-`~/Library/Application Support/Hermes Light/recovery/hermes-light-signing.p12`.
+`secrets/recovery/hermes-light-signing.p12` inside the ignored project directory.
 Retain its password in your password manager. The recovery password stays
 local. CI receives a separately encrypted PKCS#12 copy with a generated password,
 stored as its own GitHub environment secret. Loose PEM,
 CSR, and certificate files can be removed after a successful cloud release and
 backup verification. New Macs can import the encrypted PKCS#12 backup; creating
 a fresh identity instead uses `make signing-request` and
-`make import-certificate`. Signing inputs default to the private application
-support directory, or `HERMES_LIGHT_SIGNING_DIR` when supplied.
+`make import-certificate`. Explicit file inputs default to the ignored project
+directory `secrets/apple-signing`, or `HERMES_LIGHT_SIGNING_DIR` when supplied.
+Normal CI setup can use Keychain directly. Local state stays inside the
+project or temporary storage; no Application Support directory or launcher is
+created.
 
 Renew the Developer ID certificate before its expiry. Retain the old encrypted
 backup separately, replace the local certificate/key inputs, and rerun the

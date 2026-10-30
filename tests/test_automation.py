@@ -219,7 +219,9 @@ class AutomationTests(unittest.TestCase):
 
     def test_recovery_password_is_never_uploaded_to_github(self):
         private=self.root/'private'
-        (private/'signing').mkdir(parents=True)
+        (private/'apple-signing').mkdir(parents=True)
+        for name in ('developerID_application.cer','developer-id-private.pem'):
+            (private/'apple-signing'/name).write_bytes(b'fixture')
         password='recovery_'+'z'*24
         app_password='x'*4+('-'+'y'*4)*3
         uploaded={}
@@ -242,7 +244,9 @@ class AutomationTests(unittest.TestCase):
 
     def test_ci_setup_does_not_require_a_recovery_password(self):
         private=self.root/'ci-only'
-        (private/'signing').mkdir(parents=True)
+        (private/'apple-signing').mkdir(parents=True)
+        for name in ('developerID_application.cer','developer-id-private.pem'):
+            (private/'apple-signing'/name).write_bytes(b'fixture')
         uploaded={}
         def command(*args,**kwargs):
             if '-subject' in args: return 'subject=CN=Fixture,OU='+'A'*10+',O=Example'
@@ -257,6 +261,24 @@ class AutomationTests(unittest.TestCase):
             backup.assert_not_called()
         self.assertEqual(len(uploaded),5)
         self.assertFalse((private/'recovery/hermes-light-signing.p12').exists())
+
+    def test_keychain_export_selects_one_identity_and_keeps_password_off_arguments(self):
+        calls=[]
+        def command(*args,**kwargs):
+            calls.append((args,kwargs))
+            return ''
+        password='fixture_'+'z'*24
+        with patch.object(setup,'keychain_identity',return_value=('B'*40,'Developer ID Application: Fixture')), \
+                patch.object(setup,'command',side_effect=command):
+            setup.export_identity(self.root/'identity.p12',password,self.root,None)
+        request=json.loads(calls[-1][1]['input'])
+        self.assertEqual(request['fingerprint'],'B'*40)
+        self.assertEqual(request['password'],password)
+        self.assertTrue(all(password not in str(args) for args,kwargs in calls))
+
+    def test_default_signing_paths_stay_inside_the_project(self):
+        self.assertTrue(release.SIGNING.is_relative_to(release.ROOT))
+        self.assertTrue(setup.PRIVATE.is_relative_to(setup.ROOT))
 
 
 if __name__ == '__main__': unittest.main()

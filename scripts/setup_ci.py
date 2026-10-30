@@ -15,7 +15,8 @@ import subprocess
 import tempfile
 
 REPOSITORY = "hardworker/hermes-light"
-PRIVATE = Path.home() / "Library/Application Support/Hermes Light"
+ROOT = Path(__file__).resolve().parents[1]
+PRIVATE = ROOT / 'secrets'
 
 
 def command(*args, input=None):
@@ -60,6 +61,18 @@ def verify_backup(backup, password, expected_fingerprint, notary=None):
 
 
 def export_identity(destination, password, signing, certificate):
+    if certificate is None:
+        fingerprint, _ = keychain_identity()
+        with tempfile.TemporaryDirectory(prefix='hermes-keychain-export-') as folder:
+            folder = Path(folder)
+            executable = folder / 'export-identity'
+            command('xcrun', 'swiftc', '-module-cache-path', folder / 'modules',
+                    ROOT / 'scripts/export_identity.swift', '-o', executable)
+            print('macOS may request permission to export the selected Developer ID key for CI. '
+                  'Use only the native Keychain dialog for that authorization.', flush=True)
+            command(executable, input=json.dumps({'fingerprint':fingerprint, 'password':password,
+                                                 'destination':str(destination)}))
+        return
     with tempfile.TemporaryDirectory(prefix='hermes-cert-') as folder:
         pem = Path(folder) / 'certificate.pem'
         pem.write_text(command('openssl', 'x509', '-inform', 'DER', '-in', certificate))
@@ -68,20 +81,44 @@ def export_identity(destination, password, signing, certificate):
                 '-passout', 'stdin', input=password + '\n')
 
 
+def keychain_identity():
+    listing = command('security', 'find-identity', '-v', '-p', 'codesigning')
+    identities = re.findall(r'([A-Fa-f0-9]{40}) "(Developer ID Application:[^"]+)"', listing)
+    selected = os.environ.get('HERMES_LIGHT_SIGNING_IDENTITY')
+    if selected:
+        identities = [(digest,name) for digest,name in identities if selected in (digest,name)]
+    if len(identities) != 1:
+        raise ValueError('Select exactly one Developer ID identity; HERMES_LIGHT_SIGNING_IDENTITY can specify its fingerprint')
+    return identities[0]
+
+
 def identity_inputs():
-    signing = Path(os.environ.get('HERMES_LIGHT_SIGNING_DIR', PRIVATE / 'signing')).expanduser()
+    signing = Path(os.environ.get('HERMES_LIGHT_SIGNING_DIR', PRIVATE / 'apple-signing')).expanduser()
     recovery = PRIVATE / "recovery"
     recovery.mkdir(parents=True, exist_ok=True, mode=0o700)
     recovery.chmod(0o700)
     certificate = signing / "developerID_application.cer"
-    subject = command("openssl", "x509", "-inform", "DER", "-in", certificate,
-                      "-noout", "-subject", "-nameopt", "RFC2253")
+    if certificate.is_file() and (signing / 'developer-id-private.pem').is_file():
+        subject = command('openssl','x509','-inform','DER','-in',certificate,'-noout','-subject','-nameopt','RFC2253')
+        fingerprint = command('openssl','x509','-inform','DER','-in',certificate,
+                              '-noout','-fingerprint','-sha1').strip().split('=')[-1].replace(':','')
+    else:
+        fingerprint, name = keychain_identity()
+        certificates = command('security','find-certificate','-a','-c',name,'-p')
+        matched = None
+        for pem in re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',certificates,re.S):
+            digest = command('openssl','x509','-noout','-fingerprint','-sha1',input=pem).strip().split('=')[-1].replace(':','')
+            if digest.upper() == fingerprint.upper():
+                matched = pem
+                break
+        if matched is None:
+            raise ValueError('The selected Keychain certificate could not be read')
+        subject = command('openssl','x509','-noout','-subject','-nameopt','RFC2253',input=matched)
+        certificate = None
     match = re.search(r"(?:^|,)OU=([A-Z0-9]{10})(?:,|$)", subject)
     if not match:
         raise ValueError("The certificate has no Developer Team ID")
     team = match.group(1)
-    fingerprint = command("openssl", "x509", "-inform", "DER", "-in", certificate,
-                          "-noout", "-fingerprint", "-sha1").strip().split("=")[-1].replace(":", "")
     return signing, recovery, certificate, team, fingerprint
 
 

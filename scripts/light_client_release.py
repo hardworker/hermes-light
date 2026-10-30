@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "packaging/source.json"
 DEFAULT_WORK = ROOT / ".build/hermes-light"
 SIGNING = Path(os.environ.get("HERMES_LIGHT_SIGNING_DIR",
-                             Path.home() / "Library/Application Support/Hermes Light/signing")).expanduser()
+                             ROOT / "secrets/apple-signing")).expanduser()
 
 
 def run(*args, cwd=None, env=None, capture=False, input=None):
