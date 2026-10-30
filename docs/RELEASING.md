@@ -21,62 +21,52 @@ asset digests are verified while the release is a draft; the cask is then
 installed and checked through Homebrew before its commit is pushed to `main`.
 Cask-only commits do not trigger another release.
 
-## One-time signing setup
+## One-time manual credential setup
 
-Create a `release` GitHub environment restricted to the `main` branch. On the
-signing Mac, with Python 3.11+ and an authenticated GitHub CLI, run:
+The `release` GitHub environment is restricted to `main`. Configure its
+secrets manually in the repository's **Settings → Environments → release**.
+No local setup script or credential-export helper is needed.
+
+1. Open **Keychain Access → login → My Certificates**. Locate the Developer ID
+   Application identity used for Hermes Light. Expand it and select its
+   certificate and private key together, then choose **File → Export Items**.
+   Export only this identity as `/tmp/hermes-light-signing.p12`.
+2. macOS may ask you to authorize the private-key export. Choose a password
+   to encrypt the exported PKCS#12 file and retain it for the GitHub secret
+   below. This is the CI certificate password; it is separate from your Apple
+   Account password and notarization app-specific password.
+3. Copy the encrypted file's Base64 representation to the clipboard:
+
+   ```sh
+   base64 -i /tmp/hermes-light-signing.p12 | pbcopy
+   ```
+
+4. Add the following **environment secrets** using GitHub's UI:
+
+   | Secret | Value |
+   |---|---|
+   | `MACOS_SIGNING_P12_BASE64` | The Base64 text copied above |
+   | `MACOS_SIGNING_P12_PASSWORD` | The password chosen for the exported PKCS#12 file |
+   | `APPLE_NOTARY_APPLE_ID` | The Apple ID for the Developer Program membership |
+   | `APPLE_NOTARY_TEAM_ID` | The membership's Team ID |
+   | `APPLE_NOTARY_PASSWORD` | A new CI-only app-specific password from [Apple Account](https://account.apple.com) |
+
+Keep values out of source files, pull requests, and chat. The local Keychain
+identity and `hermes-light-notary` profile remain available for emergency
+signing. GitHub's runner imports its encrypted copy into a temporary Keychain
+only after the unsigned build, and deletes that Keychain afterward.
+
+After the first cloud release and Homebrew checks pass, delete the temporary
+export:
 
 ```sh
-make ci-setup
+rm /tmp/hermes-light-signing.p12
 ```
 
-All inputs are hidden. Create a new CI-only app-specific password in your
-[Apple Account](https://account.apple.com). The helper exports an encrypted
-CI copy of the existing Developer ID certificate/private key with a generated
-password, proves it can be restored and used for signing, and validates the
-Apple credentials before uploading these environment secrets through GitHub
-CLI. CI setup does not request a recovery password:
-
-- `MACOS_SIGNING_P12_BASE64`
-- `MACOS_SIGNING_P12_PASSWORD`
-- `APPLE_NOTARY_APPLE_ID`
-- `APPLE_NOTARY_TEAM_ID`
-- `APPLE_NOTARY_PASSWORD`
-
-When the identity exists only in Keychain, setup exports exactly the selected
-Developer ID identity into an encrypted temporary file. macOS may request
-permission in its native Keychain dialog. No export is started until you run
-the setup command. Temporary files are removed afterward. With multiple
-identities, `HERMES_LIGHT_SIGNING_IDENTITY` selects one fingerprint.
-
-## Optional portable recovery backup
-
-The existing local Keychain identity and `hermes-light-notary` profile remain
-usable for emergency signing. A separate exported backup is optional and can
-be created independently of CI:
-
-```sh
-python3 scripts/setup_ci.py --backup-only
-```
-
-The optional encrypted backup lives in
-`secrets/recovery/hermes-light-signing.p12` inside the ignored project directory.
-Retain its password in your password manager. The recovery password stays
-local. CI receives a separately encrypted PKCS#12 copy with a generated password,
-stored as its own GitHub environment secret. Loose PEM,
-CSR, and certificate files can be removed after a successful cloud release and
-backup verification. New Macs can import the encrypted PKCS#12 backup; creating
-a fresh identity instead uses `make signing-request` and
-`make import-certificate`. Explicit file inputs default to the ignored project
-directory `secrets/apple-signing`, or `HERMES_LIGHT_SIGNING_DIR` when supplied.
-Normal CI setup can use Keychain directly. Local state stays inside the
-project or temporary storage; no Application Support directory or launcher is
-created.
-
-Renew the Developer ID certificate before its expiry. Retain the old encrypted
-backup separately, replace the local certificate/key inputs, and rerun the
-secure setup to upload a verified new backup. Revoke and replace the dedicated
-CI app-specific password separately from local recovery credentials.
+For certificate renewal, export the replacement identity and update the two
+certificate secrets together while releases are idle. Renew before the old
+certificate expires. The dedicated CI app-specific password can be replaced
+independently of the working local notarization profile.
 
 ## Retries and recovery
 

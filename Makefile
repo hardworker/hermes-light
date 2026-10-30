@@ -1,19 +1,15 @@
 SHELL := /bin/bash
 PYTHON ?= python3
 .DEFAULT_GOAL := help
-.PHONY: help test update release build signing-request import-certificate notarize publish cask clean ci-setup
+.PHONY: help test update release build signing-request import-certificate notarize publish cask clean
 
 help:
 	@echo "Hermes Light client and Homebrew tap"
 	@echo "make update TAG=vX.Y.Z [REVISION=N] | release | cask | clean | test"
 	@echo "make build | signing-request | import-certificate | notarize | publish"
-	@echo "make ci-setup (hidden local prompts; configure the release environment first)"
 
 test:
 	@$(PYTHON) -m unittest discover -s tests -v
-
-ci-setup:
-	@$(PYTHON) scripts/setup_ci.py
 
 update:
 	@$(PYTHON) scripts/light_client_release.py update --tag "$(TAG)" $(if $(REVISION),--revision "$(REVISION)")

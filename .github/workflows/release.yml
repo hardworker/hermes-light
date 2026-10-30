@@ -39,13 +39,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/ci_release.py prepare
-      - name: Require signing setup before spending runner time on a build
+      - name: Require release secrets before spending runner time on a build
         if: steps.state.outputs.published != 'true'
         env:
           CONFIGURED: ${{ secrets.MACOS_SIGNING_P12_BASE64 != '' && secrets.MACOS_SIGNING_P12_PASSWORD != '' && secrets.APPLE_NOTARY_APPLE_ID != '' && secrets.APPLE_NOTARY_TEAM_ID != '' && secrets.APPLE_NOTARY_PASSWORD != '' }}
         run: |
           if [ "$CONFIGURED" != true ]; then
-            echo 'Complete the local secure setup for the release environment, then rerun this workflow.'
+            echo 'Configure the release environment secrets manually using docs/RELEASING.md, then rerun this workflow.'
             exit 1
           fi
       - name: Build unsigned Light client without signing credentials

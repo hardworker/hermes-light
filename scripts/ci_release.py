@@ -109,7 +109,7 @@ def signing_setup():
     names = ('MACOS_SIGNING_P12_BASE64', 'MACOS_SIGNING_P12_PASSWORD', 'APPLE_NOTARY_APPLE_ID',
              'APPLE_NOTARY_TEAM_ID', 'APPLE_NOTARY_PASSWORD')
     if any(not os.environ.get(name) for name in names):
-        raise ValueError('Release environment secrets are incomplete; run the local secure CI setup')
+        raise ValueError('Release environment secrets are incomplete; configure them manually using docs/RELEASING.md')
     directory = Path(os.environ['RUNNER_TEMP']) / 'hermes-signing'
     directory.mkdir(mode=0o700)
     keychain = directory / 'release.keychain-db'
