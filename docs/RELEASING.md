@@ -30,11 +30,12 @@ signing Mac, with Python 3.11+ and an authenticated GitHub CLI, run:
 make ci-setup
 ```
 
-All password inputs are hidden. Create a new CI-only app-specific password in
-your [Apple Account](https://account.apple.com). The helper exports the existing
-Developer ID Application certificate/private key to encrypted PKCS#12, proves
-it can be restored and used for signing, and validates the Apple credentials
-before uploading these environment secrets directly through GitHub CLI:
+All inputs are hidden. Create a new CI-only app-specific password in your
+[Apple Account](https://account.apple.com). The helper exports an encrypted
+CI copy of the existing Developer ID certificate/private key with a generated
+password, proves it can be restored and used for signing, and validates the
+Apple credentials before uploading these environment secrets through GitHub
+CLI. CI setup does not request a recovery password:
 
 - `MACOS_SIGNING_P12_BASE64`
 - `MACOS_SIGNING_P12_PASSWORD`
@@ -42,12 +43,21 @@ before uploading these environment secrets directly through GitHub CLI:
 - `APPLE_NOTARY_TEAM_ID`
 - `APPLE_NOTARY_PASSWORD`
 
-The encrypted backup lives in
+## Optional portable recovery backup
+
+The existing local Keychain identity and `hermes-light-notary` profile remain
+usable for emergency signing. A separate exported backup is optional and can
+be created independently of CI:
+
+```sh
+python3 scripts/setup_ci.py --backup-only
+```
+
+The optional encrypted backup lives in
 `~/Library/Application Support/Hermes Light/recovery/hermes-light-signing.p12`.
 Retain its password in your password manager. The recovery password stays
 local. CI receives a separately encrypted PKCS#12 copy with a generated password,
-stored as its own GitHub environment secret. The local Keychain identity and
-`hermes-light-notary` profile remain usable for emergency signing. Loose PEM,
+stored as its own GitHub environment secret. Loose PEM,
 CSR, and certificate files can be removed after a successful cloud release and
 backup verification. New Macs can import the encrypted PKCS#12 backup; creating
 a fresh identity instead uses `make signing-request` and

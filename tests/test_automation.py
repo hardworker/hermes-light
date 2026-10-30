@@ -240,5 +240,23 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(exports[1],uploaded['MACOS_SIGNING_P12_PASSWORD'])
         self.assertNotIn(password,uploaded.values())
 
+    def test_ci_setup_does_not_require_a_recovery_password(self):
+        private=self.root/'ci-only'
+        (private/'signing').mkdir(parents=True)
+        uploaded={}
+        def command(*args,**kwargs):
+            if '-subject' in args: return 'subject=CN=Fixture,OU='+'A'*10+',O=Example'
+            if '-fingerprint' in args: return 'SHA1 Fingerprint='+'B'*40
+            if args[:3]==('gh','secret','set'): uploaded[args[3]]=kwargs['input']
+            return ''
+        def export(destination,*args): destination.write_bytes(b'encrypted CI fixture')
+        with patch.object(setup,'PRIVATE',private),patch.object(setup,'command',side_effect=command), \
+                patch.object(setup,'export_identity',side_effect=export),patch.object(setup,'verify_backup'), \
+                patch.object(setup,'backup_identity') as backup:
+            setup.provision(None,'fixture@example.com','x'*4+('-'+'y'*4)*3)
+            backup.assert_not_called()
+        self.assertEqual(len(uploaded),5)
+        self.assertFalse((private/'recovery/hermes-light-signing.p12').exists())
+
 
 if __name__ == '__main__': unittest.main()
