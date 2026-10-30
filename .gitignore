@@ -9,3 +9,9 @@ __pycache__/
 *.p8
 *.cer
 *.certSigningRequest
+.env
+.env.*
+*.pfx
+*.mobileprovision
+*.provisionprofile
+*.log

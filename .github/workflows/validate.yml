@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -26,10 +28,8 @@ jobs:
         run: |
           python -m py_compile scripts/light_client_release.py
           node --check packaging/sign-app.mjs
-      - name: Check secrets and shell syntax
-        run: |
-          bash -n scripts/check-secrets.sh
-          bash scripts/check-secrets.sh
+      - name: Check source, docs, and history for sensitive data
+        run: python scripts/check_repository.py --history
       - name: Validate published cask syntax when present
         run: |
           if [ -f Casks/hermes-light.rb ]; then ruby -c Casks/hermes-light.rb; fi
