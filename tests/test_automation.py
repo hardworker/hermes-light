@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 import light_client_release as release
 import ci_release as ci
 import upstream_update as upstream
+import setup_ci as setup
 
 
 class AutomationTests(unittest.TestCase):
@@ -215,6 +216,29 @@ class AutomationTests(unittest.TestCase):
                     'head_repository':{'full_name':self.config['distribution_repository'] if run_id!=3 else 'example/fork'}}
         with patch.object(ci,'artifacts',return_value=records),patch.object(ci,'api',side_effect=github):
             self.assertEqual([a['id'] for a in ci.trusted_artifacts(self.config)],[1])
+
+    def test_recovery_password_is_never_uploaded_to_github(self):
+        private=self.root/'private'
+        (private/'signing').mkdir(parents=True)
+        password='recovery_'+'z'*24
+        app_password='x'*4+('-'+'y'*4)*3
+        uploaded={}
+        exports=[]
+        def command(*args,**kwargs):
+            if '-subject' in args: return 'subject=CN=Fixture,OU='+'A'*10+',O=Example'
+            if '-fingerprint' in args: return 'SHA1 Fingerprint='+'B'*40
+            if args[:3]==('gh','secret','set'): uploaded[args[3]]=kwargs['input']
+            return ''
+        def export(destination,chosen_password,*args):
+            exports.append(chosen_password)
+            destination.write_bytes(b'encrypted certificate fixture')
+        with patch.object(setup,'PRIVATE',private),patch.object(setup,'command',side_effect=command), \
+                patch.object(setup,'export_identity',side_effect=export),patch.object(setup,'verify_backup'):
+            setup.provision(password,'fixture@example.com',app_password)
+        self.assertEqual(exports[0],password)
+        self.assertNotEqual(uploaded['MACOS_SIGNING_P12_PASSWORD'],password)
+        self.assertEqual(exports[1],uploaded['MACOS_SIGNING_P12_PASSWORD'])
+        self.assertNotIn(password,uploaded.values())
 
 
 if __name__ == '__main__': unittest.main()

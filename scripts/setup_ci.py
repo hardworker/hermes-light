@@ -59,6 +59,15 @@ def verify_backup(backup, password, expected_fingerprint, notary=None):
             command("security", "list-keychains", "-d", "user", "-s", *previous)
 
 
+def export_identity(destination, password, signing, certificate):
+    with tempfile.TemporaryDirectory(prefix='hermes-cert-') as folder:
+        pem = Path(folder) / 'certificate.pem'
+        pem.write_text(command('openssl', 'x509', '-inform', 'DER', '-in', certificate))
+        command('openssl', 'pkcs12', '-export', '-inkey', signing / 'developer-id-private.pem',
+                '-in', pem, '-name', 'Hermes Light Developer ID', '-out', destination,
+                '-passout', 'stdin', input=password + '\n')
+
+
 def provision(password, apple_id, notary_password):
     if len(password) < 12 or any(c in password for c in "\n\r\0"):
         raise ValueError("Use a recovery password of at least 12 characters")
@@ -83,18 +92,18 @@ def provision(password, apple_id, notary_password):
     old_mask = os.umask(0o077)
     try:
         if not backup.exists():
-            with tempfile.TemporaryDirectory(prefix="hermes-cert-") as folder:
-                pem = Path(folder) / "certificate.pem"
-                pem.write_text(command("openssl", "x509", "-inform", "DER", "-in", certificate))
-                command("openssl", "pkcs12", "-export", "-inkey", signing / "developer-id-private.pem",
-                        "-in", pem, "-name", "Hermes Light Developer ID", "-out", backup,
-                        "-passout", "stdin", input=password + "\n")
+            export_identity(backup, password, signing, certificate)
         backup.chmod(0o600)
         verify_backup(backup, password, fingerprint, notary=(apple_id, team, notary_password))
         print("Encrypted certificate backup restored; signing and Apple CI credentials verified.", flush=True)
+        ci_password = secrets.token_urlsafe(40)
+        with tempfile.TemporaryDirectory(prefix='hermes-ci-certificate-') as folder:
+            ci_bundle = Path(folder) / 'identity.p12'
+            export_identity(ci_bundle, ci_password, signing, certificate)
+            encoded_ci_bundle = base64.b64encode(ci_bundle.read_bytes()).decode()
         values = {
-            "MACOS_SIGNING_P12_BASE64": base64.b64encode(backup.read_bytes()).decode(),
-            "MACOS_SIGNING_P12_PASSWORD": password,
+            "MACOS_SIGNING_P12_BASE64": encoded_ci_bundle,
+            "MACOS_SIGNING_P12_PASSWORD": ci_password,
             "APPLE_NOTARY_APPLE_ID": apple_id,
             "APPLE_NOTARY_TEAM_ID": team,
             "APPLE_NOTARY_PASSWORD": notary_password,
@@ -103,7 +112,8 @@ def provision(password, apple_id, notary_password):
             command("gh", "secret", "set", name, "--repo", REPOSITORY, "--env", "release", input=value)
             print(f"Configured environment secret: {name}", flush=True)
         report = {"certificate_backup": str(backup), "backup_sha256": hashlib.sha256(backup.read_bytes()).hexdigest(),
-                  "signing_fingerprint": fingerprint, "backup_restored": True, "github_secrets_configured": True}
+                  "signing_fingerprint": fingerprint, "backup_restored": True, "github_secrets_configured": True,
+                  "separate_ci_encryption": True}
         (recovery / "setup.json").write_text(json.dumps(report, indent=2) + "\n")
         return report
     finally:

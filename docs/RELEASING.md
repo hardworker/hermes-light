@@ -44,7 +44,9 @@ before uploading these environment secrets directly through GitHub CLI:
 
 The encrypted backup lives in
 `~/Library/Application Support/Hermes Light/recovery/hermes-light-signing.p12`.
-Retain its password in your password manager. The local Keychain identity and
+Retain its password in your password manager. The recovery password stays
+local. CI receives a separately encrypted PKCS#12 copy with a generated password,
+stored as its own GitHub environment secret. The local Keychain identity and
 `hermes-light-notary` profile remain usable for emergency signing. Loose PEM,
 CSR, and certificate files can be removed after a successful cloud release and
 backup verification. New Macs can import the encrypted PKCS#12 backup; creating
