@@ -10,7 +10,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 PRIVATE_EXTENSIONS = {".pem", ".key", ".p12", ".pfx", ".p8", ".cer",
-                      ".certsigningrequest", ".mobileprovision", ".provisionprofile"}
+                      ".certsigningrequest", ".mobileprovision", ".provisionprofile", ".dmg", ".zip"}
 PATTERNS = {
     "private key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"),
     "GitHub token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
