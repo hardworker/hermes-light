@@ -2,11 +2,12 @@ name: Check upstream release
 
 on:
   schedule:
+    # Daily at 06:17 UTC.
     - cron: '17 6 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Inspect the latest upstream release without changing the update PR
+        description: Preview the update without changing the PR
         type: boolean
         default: false
 
@@ -19,19 +20,27 @@ concurrency:
 
 jobs:
   update:
+    name: Propose an upstream update
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     permissions:
+      # Update the source pin branch and its PR; never approve or merge it.
       contents: write
       pull-requests: write
+
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check out the source pin and updater
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+
       - name: Maintain one reviewed upstream update PR
         env:
           GH_TOKEN: ${{ github.token }}

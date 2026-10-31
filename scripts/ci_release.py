@@ -25,7 +25,7 @@ def api(path, method=None, data=None):
 
 
 def check(config):
-    if os.environ.get('CONFIGURED') != 'true':
+    if os.environ.get('RELEASE_SECRETS_CONFIGURED') != 'true':
         raise ValueError('Configure the release environment secrets manually using docs/RELEASING.md')
     release.assert_new_release(config)
 
