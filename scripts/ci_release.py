@@ -7,19 +7,11 @@ import base64
 import json
 import os
 from pathlib import Path
-import re
 import secrets
 import shutil
 import subprocess
-import tempfile
-import zipfile
 
 import light_client_release as release
-
-
-def output(name, value):
-    with open(os.environ['GITHUB_OUTPUT'], 'a') as target:
-        target.write(f'{name}={value}\n')
 
 
 def api(path, method=None, data=None):
@@ -32,74 +24,14 @@ def api(path, method=None, data=None):
     return json.loads(result) if result.strip() else None
 
 
-def artifacts(repository):
-    pages = json.loads(release.run('gh', 'api', '--paginate', '--slurp',
-                                  f'repos/{repository}/actions/artifacts?per_page=100', capture=True).stdout)
-    return [artifact for page in pages for artifact in page['artifacts']]
+def check(config):
+    if os.environ.get('CONFIGURED') != 'true':
+        raise ValueError('Configure the release environment secrets manually using docs/RELEASING.md')
+    release.assert_new_release(config)
 
 
-def trusted_artifacts(config):
-    repository = config['distribution_repository']
-    prefix = f"hermes-checkpoint-{release.release_tag(config)}-"
-    checked, results = {}, []
-    for artifact in artifacts(repository):
-        if artifact['expired'] or not artifact['name'].startswith(prefix):
-            continue
-        run_id = artifact['workflow_run']['id']
-        if run_id not in checked:
-            run = api(f'repos/{repository}/actions/runs/{run_id}')
-            checked[run_id] = (run['path'] == '.github/workflows/release.yml'
-                               and run['head_branch'] == 'main'
-                               and run['event'] in ('push', 'workflow_dispatch')
-                               and run['head_repository']['full_name'] == repository)
-        if checked[run_id]:
-            results.append(artifact)
-    return sorted(results, key=lambda x: ('-final-' in x['name'], x['id']), reverse=True)
-
-
-def restore(config, work):
-    matches = trusted_artifacts(config)
-    if not matches:
-        return False
-    artifact = matches[0]
-    with tempfile.TemporaryDirectory(prefix='hermes-checkpoint-') as folder:
-        folder = Path(folder)
-        download = folder / 'artifact.zip'
-        with download.open('wb') as target:
-            subprocess.run(['gh', 'api', f"repos/{config['distribution_repository']}/actions/artifacts/{artifact['id']}/zip"],
-                           check=True, stdout=target)
-        extracted = folder / 'checkpoint'
-        extracted.mkdir()
-        with zipfile.ZipFile(download) as archive:
-            allowed = {'checkpoint.json', 'notary-upload.zip', release.archive_name(config)}
-            if any(info.filename not in allowed or info.is_dir() for info in archive.infolist()):
-                raise ValueError('Unexpected file in checkpoint artifact')
-            archive.extractall(extracted)
-        release.restore_checkpoint(config, work, extracted)
-    return True
-
-
-def prepare(config, work):
-    release.assert_current_pin(config)
-    output('tag', release.release_tag(config))
-    output('work', work)
-    published = release.get_release(config)
-    if published and not published['isDraft']:
-        release.sync_cask(config)
-        output('published', 'true')
-        output('candidate', 'false')
-        output('final', 'false')
-        return
-    restored = restore(config, work)
-    if published and published['isDraft'] and not restored:
-        raise ValueError('A partial draft exists but its exact checkpoint is unavailable; do not rebuild and overwrite its assets')
-    output('published', 'false')
-    output('candidate', str((work / 'candidate.json').exists()).lower())
-    output('final', str((work / 'release.json').exists()).lower())
-
-
-def secure(*args, input=None):
-    result = subprocess.run(list(map(str, args)), input=input, text=True, capture_output=True)
+def secure(*args):
+    result = subprocess.run(list(map(str, args)), text=True, capture_output=True)
     if result.returncode:
         raise ValueError(f'{Path(str(args[0])).name} failed; signing arguments and output withheld')
     return result.stdout
@@ -136,8 +68,7 @@ def signing_setup():
         secure('xcrun', 'notarytool', 'store-credentials', 'hermes-light-ci', '--keychain', keychain,
                '--apple-id', os.environ['APPLE_NOTARY_APPLE_ID'], '--team-id', os.environ['APPLE_NOTARY_TEAM_ID'],
                '--password', os.environ['APPLE_NOTARY_PASSWORD'])
-        output('keychain', keychain)
-        output('identity', identity)
+        return keychain, identity
     finally:
         p12.unlink(missing_ok=True)
 
@@ -145,10 +76,20 @@ def signing_setup():
 def signing_cleanup():
     directory = Path(os.environ['RUNNER_TEMP']) / 'hermes-signing'
     keychain = directory / 'release.keychain-db'
-    if keychain.exists():
-        secure('security', 'delete-keychain', keychain)
-    if directory.exists():
-        shutil.rmtree(directory)
+    try:
+        if keychain.exists():
+            secure('security', 'delete-keychain', keychain)
+    finally:
+        if directory.exists():
+            shutil.rmtree(directory)
+
+
+def sign(config, work):
+    try:
+        keychain, identity = signing_setup()
+        release.notarize(config, work, 'hermes-light-ci', identity, keychain)
+    finally:
+        signing_cleanup()
 
 
 def commit_cask(config):
@@ -171,15 +112,6 @@ def commit_cask(config):
         release.run('git', 'commit', '-m', f"Release Hermes Light {config['version']} revision {config['revision']}")
         release.run('gh', 'auth', 'setup-git')
         release.run('git', 'push', 'origin', 'HEAD:main')
-
-
-def finish(config):
-    for artifact in trusted_artifacts(config):
-        api(f"repos/{config['distribution_repository']}/actions/artifacts/{artifact['id']}", method='DELETE')
-    summary = os.environ.get('GITHUB_STEP_SUMMARY')
-    if summary:
-        with open(summary, 'a') as out:
-            out.write(f"Released {release.release_tag(config)}. Signature, notarization, archive digest and Homebrew checks passed.\n")
 
 
 def smoke(config):
@@ -222,22 +154,28 @@ def smoke_cleanup(config):
     marker.unlink(missing_ok=True)
 
 
+def clean(config):
+    try:
+        signing_cleanup()
+    finally:
+        try:
+            smoke_cleanup(config)
+        finally:
+            if release.DEFAULT_WORK.exists():
+                shutil.rmtree(release.DEFAULT_WORK)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['prepare', 'signing-setup', 'signing-cleanup', 'commit-cask',
-                                         'smoke', 'smoke-cleanup', 'finish', 'clean'])
+    parser.add_argument('action', choices=['check', 'sign', 'smoke', 'commit-cask', 'clean'])
     args = parser.parse_args()
     config = release.read_config()
     work = release.DEFAULT_WORK / release.release_tag(config)
-    if args.action == 'prepare': prepare(config, work)
-    elif args.action == 'signing-setup': signing_setup()
-    elif args.action == 'signing-cleanup': signing_cleanup()
-    elif args.action == 'commit-cask': commit_cask(config)
+    if args.action == 'check': check(config)
+    elif args.action == 'sign': sign(config, work)
     elif args.action == 'smoke': smoke(config)
-    elif args.action == 'smoke-cleanup': smoke_cleanup(config)
-    elif args.action == 'clean':
-        if release.DEFAULT_WORK.exists(): shutil.rmtree(release.DEFAULT_WORK)
-    else: finish(config)
+    elif args.action == 'commit-cask': commit_cask(config)
+    else: clean(config)
 
 
 if __name__ == '__main__':

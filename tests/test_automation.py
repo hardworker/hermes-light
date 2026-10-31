@@ -1,6 +1,5 @@
-"""Exercise retry boundaries, publication immutability, and workflow isolation."""
+"""Release publication, signing cleanup, and upstream-update boundaries."""
 import base64
-import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -8,8 +7,6 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-import uuid
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -40,131 +37,130 @@ class AutomationTests(unittest.TestCase):
         binary.write_bytes(b'fixture')
         self.manifest = {'config': self.config, 'app': str(self.app), 'source': str(self.work / 'source'),
                          'bundle_identifier': 'com.nousresearch.hermes-light-' + self.config['commit'][:7],
-                         'app_version': self.config['version'], 'notarization_status': 'In Progress',
-                         'notarization_id': str(uuid.uuid4()), 'packaging_commit': 'b' * 40}
+                         'app_version': self.config['version'], 'notarization_status': 'not_submitted',
+                         'packaging_commit': 'b' * 40}
 
-    def zip_app(self, name):
-        path = self.work / name
-        with zipfile.ZipFile(path, 'w') as archive:
-            for p in self.app.rglob('*'):
-                if p.is_file(): archive.write(p, p.relative_to(self.app.parent))
-        return path
-
-    def test_checkpoint_is_portable_and_restores_the_same_submission(self):
-        upload = self.zip_app('notary-upload.zip')
-        self.manifest['upload_sha256'] = release.checksum(upload)
-        release.write_json(self.work / 'candidate.json', self.manifest)
-        checkpoint = self.root / 'checkpoint'
-        release.export_checkpoint(self.config, self.work, checkpoint)
-        text = (checkpoint / 'checkpoint.json').read_text()
-        self.assertNotIn(str(self.root), text)
-        def command(*args, **kwargs):
-            if args[0] == 'ditto':
-                with zipfile.ZipFile(args[3]) as archive: archive.extractall(args[4])
-            return SimpleNamespace(stdout='')
-        restored = self.root / 'restored'
-        with patch.object(release, 'run', side_effect=command):
-            release.restore_checkpoint(self.config, restored, checkpoint)
-        actual = json.loads((restored / 'candidate.json').read_text())
-        self.assertEqual(actual['notarization_id'], self.manifest['notarization_id'])
-        self.assertEqual(actual['upload_sha256'], self.manifest['upload_sha256'])
-        (checkpoint / 'notary-upload.zip').write_bytes(b'tampered')
-        with self.assertRaisesRegex(ValueError, 'checksum'):
-            release.restore_checkpoint(self.config, self.root / 'wrong', checkpoint)
-
-    def test_checkpoint_rejects_path_and_symlink_escape(self):
-        app = self.app.name
-        for name, link in [('../escape', None), (app + '/escape', '/etc/passwd')]:
-            archive = self.root / 'bad.zip'
-            with zipfile.ZipFile(archive, 'w') as zipped:
-                if link:
-                    info = zipfile.ZipInfo(name)
-                    info.external_attr = 0o120777 << 16
-                    zipped.writestr(info, link)
-                else: zipped.writestr(name, 'fixture')
-            with self.subTest(name=name), self.assertRaises(ValueError):
-                release.validate_zip(archive, app)
-
-    def test_final_checkpoint_keeps_exact_published_archive_bytes(self):
-        archive = self.zip_app(release.archive_name(self.config))
-        manifest = dict(self.manifest, notarization_status='Accepted', archive=str(archive), sha256=release.checksum(archive))
-        release.write_json(self.work/'release.json', manifest)
-        checkpoint = self.root/'final-checkpoint'
-        release.export_checkpoint(self.config, self.work, checkpoint)
-        def command(*args, **kwargs):
-            if args[0] == 'ditto':
-                with zipfile.ZipFile(args[3]) as zipped: zipped.extractall(args[4])
-            return SimpleNamespace(stdout='')
-        destination=self.root/'final-restored'
-        with patch.object(release,'run',side_effect=command):
-            release.restore_checkpoint(self.config,destination,checkpoint)
-        restored=json.loads((destination/'release.json').read_text())
-        self.assertEqual(release.checksum(Path(restored['archive'])),manifest['sha256'])
-        with patch.object(release,'get_release',return_value={'isDraft':True}), \
-                patch.object(release,'publish') as publish, patch.object(release,'build') as build, \
-                patch.object(release,'notarize') as notarize:
-            release.release_all(self.config,destination,destination/'source','fixture',None)
-            publish.assert_called_once()
-            build.assert_not_called()
-            notarize.assert_not_called()
-
-    def test_submit_only_persists_id_without_waiting(self):
-        self.manifest['notarization_status'] = 'not_submitted'
+    def test_notarization_waits_and_rejects_unaccepted_submissions(self):
         release.write_json(self.work / 'candidate.json', self.manifest)
         prepared = self.work / 'source/.build/desktop-job/prepared.json'
         prepared.parent.mkdir(parents=True)
         prepared.write_text(json.dumps({'node': 'node'}))
-        def command(*args, **kwargs):
-            if args[0] == 'ditto': Path(args[-1]).write_bytes(b'signed upload')
-            result = {'id': self.manifest['notarization_id'], 'status': 'In Progress'}
-            return SimpleNamespace(stdout=json.dumps(result))
-        with patch.object(release, 'require_mac'), patch.object(release, 'select_identity', return_value='b'*40), \
-                patch.object(release, 'run', side_effect=command), patch.object(release.subprocess, 'run') as waiting:
-            release.notarize(self.config, self.work, 'fixture', None, Path('ci.keychain'), submit_only=True)
-            waiting.assert_not_called()
-        saved = json.loads((self.work / 'candidate.json').read_text())
-        self.assertEqual(saved['notarization_id'], self.manifest['notarization_id'])
-        self.assertIn('upload_sha256', saved)
+        for status in ('Invalid', 'Accepted'):
+            calls = []
+            def command(*args, **kwargs):
+                calls.append(args)
+                if args[0] == 'ditto': Path(args[-1]).write_bytes(b'signed archive')
+                return SimpleNamespace(stdout=json.dumps({'id': 'submission-id', 'status': status}))
+            with self.subTest(status=status), patch.object(release, 'require_mac'), \
+                    patch.object(release, 'select_identity', return_value='b'*40), \
+                    patch.object(release, 'run', side_effect=command):
+                if status == 'Invalid':
+                    with self.assertRaisesRegex(ValueError, 'Invalid'):
+                        release.notarize(self.config, self.work, 'fixture', None, Path('ci.keychain'))
+                    self.assertFalse((self.work / 'release.json').exists())
+                    self.assertFalse(any(args[:2] == ('xcrun', 'stapler') for args in calls))
+                else:
+                    release.notarize(self.config, self.work, 'fixture', None, Path('ci.keychain'))
+                    manifest = json.loads((self.work / 'release.json').read_text())
+                    release.validate_release(manifest, self.config)
+                submit = next(args for args in calls if args[:3] == ('xcrun', 'notarytool', 'submit'))
+                self.assertIn('--wait', submit)
+                self.assertIn('ci.keychain', submit)
 
-    def test_wait_timeout_keeps_saved_submission_and_needs_no_source_cache(self):
-        release.write_json(self.work / 'candidate.json', self.manifest)
-        with patch.object(release, 'require_mac'), patch.object(release.subprocess, 'run',
-                return_value=SimpleNamespace(stdout='', returncode=1)):
-            with self.assertRaisesRegex(ValueError, 'submission is saved'):
-                release.notarize(self.config, self.work, 'fixture', None)
-        self.assertEqual(json.loads((self.work / 'candidate.json').read_text())['notarization_id'],
-                         self.manifest['notarization_id'])
+    def test_existing_release_or_draft_stops_before_build_or_upload(self):
+        for draft in (False, True):
+            with self.subTest(draft=draft), patch.object(release, 'require_mac'), \
+                    patch.object(release, 'assert_current_pin'), \
+                    patch.object(release, 'get_release', return_value={'isDraft': draft}), \
+                    patch.object(release, 'run') as command, patch.object(release, 'build') as build:
+                with self.assertRaisesRegex(ValueError, 'already exists'):
+                    release.release_all(self.config, self.work, self.work/'source', 'fixture', None)
+                with self.assertRaisesRegex(ValueError, 'already exists'):
+                    release.publish(self.config, self.work)
+                build.assert_not_called()
+                command.assert_not_called()
 
-    def test_partial_draft_uploads_only_missing_matching_assets(self):
-        archive = self.zip_app(release.archive_name(self.config))
-        manifest = dict(self.manifest, notarization_status='Accepted', archive=str(archive), sha256=release.checksum(archive))
+    def test_existing_tag_without_a_release_also_stops(self):
+        with patch.object(release, 'assert_current_pin'), patch.object(release, 'get_release', return_value=None), \
+                patch.object(release, 'run', return_value=SimpleNamespace(stdout='b'*40+'\trefs/tags/fixture\n')):
+            with self.assertRaisesRegex(ValueError, 'tag already exists'):
+                release.assert_new_release(self.config)
+
+    def test_api_failure_is_not_treated_as_a_missing_release(self):
+        with patch.object(release.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stderr='connection failed')):
+            with self.assertRaisesRegex(ValueError, 'API failure'):
+                release.get_release(self.config)
+
+    def test_draft_is_published_only_after_all_uploaded_digests_match(self):
+        archive = self.work / release.archive_name(self.config)
+        archive.write_bytes(b'signed archive')
+        manifest = dict(self.manifest, notarization_status='Accepted', notarization_id='submission-id',
+                        archive=str(archive), sha256=release.checksum(archive))
         release.write_json(self.work / 'release.json', manifest)
-        (self.root / 'Casks').mkdir()
-        assets = {archive.name: {'name': archive.name, 'digest': 'sha256:' + manifest['sha256']}}
-        calls = []
-        def existing(config):
-            return {'isDraft': True, 'targetCommitish': 'b'*40, 'assets': list(assets.values())}
-        def command(*args, **kwargs):
-            calls.append(args)
-            if args[:3] == ('gh', 'repo', 'view'): return SimpleNamespace(stdout='{"isPrivate":false}')
-            if args[:3] == ('gh', 'release', 'upload'):
-                path = Path(args[4]); assets[path.name] = {'name': path.name, 'digest': 'sha256:'+release.checksum(path)}
-            return SimpleNamespace(stdout='')
-        with patch.object(release, 'ROOT', self.root), patch.object(release, 'require_mac'), \
-                patch.object(release, 'assert_current_pin'), patch.object(release, 'get_release', side_effect=existing), \
-                patch.object(release, 'run', side_effect=command):
-            release.publish(self.config, self.work, 'b'*40)
-        uploaded = [args for args in calls if args[:3] == ('gh','release','upload')]
-        self.assertEqual(len(uploaded), 1)
-        self.assertEqual(Path(uploaded[0][4]).name, 'release-manifest.json')
-        self.assertTrue(any(args[:3] == ('gh','release','edit') and '--draft=false' in args for args in calls))
-        self.assertFalse(any('--clobber' in args for args in calls))
+        for tampered in (True, False):
+            calls, assets = [], []
+            created = False
+            def existing(config):
+                return {'isDraft': True, 'assets': assets} if created else None
+            def command(*args, **kwargs):
+                nonlocal created
+                calls.append(args)
+                if args[:3] == ('gh', 'repo', 'view'):
+                    return SimpleNamespace(stdout='{"isPrivate":false}')
+                if args[:3] == ('gh', 'release', 'create'): created = True
+                if args[:3] == ('gh', 'release', 'upload'):
+                    for path in map(Path, args[4:6]):
+                        digest = '0'*64 if tampered and path == archive else release.checksum(path)
+                        assets.append({'name': path.name, 'digest': 'sha256:'+digest})
+                return SimpleNamespace(stdout='')
+            with self.subTest(tampered=tampered), patch.object(release, 'ROOT', self.root), \
+                    patch.object(release, 'require_mac'), patch.object(release, 'assert_current_pin'), \
+                    patch.object(release, 'get_release', side_effect=existing), \
+                    patch.object(release, 'run', side_effect=command):
+                if tampered:
+                    with self.assertRaisesRegex(ValueError, 'different digest'):
+                        release.publish(self.config, self.work)
+                    self.assertFalse((self.root/'Casks/hermes-light.rb').exists())
+                else:
+                    release.publish(self.config, self.work)
+                    self.assertIn(manifest['sha256'], (self.root/'Casks/hermes-light.rb').read_text())
+            published = [args for args in calls if args[:3] == ('gh', 'release', 'edit')]
+            self.assertEqual(bool(published), not tampered)
+            create = next(args for args in calls if args[:3] == ('gh', 'release', 'create'))
+            self.assertEqual(create[create.index('--target')+1], manifest['packaging_commit'])
+            self.assertIn('--draft', create)
+            self.assertFalse(any('--clobber' in args for args in calls))
 
-    def test_bad_existing_asset_cannot_be_published(self):
-        archive = self.root / 'release.zip'; archive.write_bytes(b'fixture')
-        wrong = {'assets': [{'name': archive.name, 'digest': 'sha256:'+'0'*64}]}
-        with self.assertRaisesRegex(ValueError, 'will not be replaced'):
-            release.verify_assets(wrong, [archive])
+    def test_failed_import_or_notarization_still_cleans_signing_credentials(self):
+        for stage in ('setup', 'notarize'):
+            with self.subTest(stage=stage), \
+                    patch.object(ci, 'signing_setup', side_effect=ValueError('setup failed') if stage=='setup' else None,
+                                 return_value=(Path('ci.keychain'), 'identity')), \
+                    patch.object(release, 'notarize', side_effect=ValueError('notarize failed')), \
+                    patch.object(ci, 'signing_cleanup') as cleanup:
+                with self.assertRaises(ValueError):
+                    ci.sign(self.config, self.work)
+                cleanup.assert_called_once()
+
+    def test_signing_files_are_removed_even_if_keychain_deletion_fails(self):
+        directory = self.root/'hermes-signing'
+        directory.mkdir()
+        (directory/'release.keychain-db').write_bytes(b'fixture')
+        (directory/'identity.p12').write_bytes(b'fixture')
+        with patch.dict('os.environ', RUNNER_TEMP=str(self.root)), \
+                patch.object(ci, 'secure', side_effect=ValueError('delete failed')):
+            with self.assertRaises(ValueError): ci.signing_cleanup()
+        self.assertFalse(directory.exists())
+
+    def test_cleanup_attempts_every_stage_after_an_earlier_failure(self):
+        for stage in ('signing', 'smoke'):
+            self.work.mkdir(exist_ok=True)
+            with self.subTest(stage=stage), patch.object(release, 'DEFAULT_WORK', self.work), \
+                    patch.object(ci, 'signing_cleanup', side_effect=ValueError('failed') if stage=='signing' else None), \
+                    patch.object(ci, 'smoke_cleanup', side_effect=ValueError('failed') if stage=='smoke' else None) as smoke:
+                with self.assertRaises(ValueError): ci.clean(self.config)
+                smoke.assert_called_once()
+            self.assertFalse(self.work.exists())
 
     def test_main_pin_advance_prevents_stale_publication(self):
         newer = dict(self.config, revision=self.config['revision']+1)
@@ -201,20 +197,7 @@ class AutomationTests(unittest.TestCase):
         self.assertIn('runs-on: xcode-27', text)
         self.assertNotIn('pull_request_target', text)
         self.assertIn('if: always()', text)
-        self.assertIn('retention-days: 7', text)
-        self.assertLess(text.index('Build unsigned'), text.index('Import signing credentials'))
-
-    def test_artifact_recovery_excludes_fork_and_nonrelease_workflow_runs(self):
-        tag=release.release_tag(self.config)
-        records=[{'id':i,'name':f'hermes-checkpoint-{tag}-final-{i}-1','expired':False,
-                  'workflow_run':{'id':i}} for i in (1,2,3)]
-        def github(path, **kwargs):
-            run_id=int(path.rsplit('/',1)[-1])
-            return {'path':'.github/workflows/release.yml' if run_id!=2 else '.github/workflows/validate.yml',
-                    'head_branch':'main','event':'push',
-                    'head_repository':{'full_name':self.config['distribution_repository'] if run_id!=3 else 'example/fork'}}
-        with patch.object(ci,'artifacts',return_value=records),patch.object(ci,'api',side_effect=github):
-            self.assertEqual([a['id'] for a in ci.trusted_artifacts(self.config)],[1])
+        self.assertLess(text.index('Build unsigned'), text.index('Sign, notarize'))
 
     def test_default_signing_path_stays_inside_the_project(self):
         self.assertTrue(release.SIGNING.is_relative_to(release.ROOT))

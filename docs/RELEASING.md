@@ -68,24 +68,34 @@ certificate secrets together while releases are idle. Renew before the old
 certificate expires. The dedicated CI app-specific password can be replaced
 independently of the working local notarization profile.
 
-## Retries and recovery
+## Failed releases
 
-Use **Run workflow** on **Release Hermes Light**, selecting `main`. It retries
-the approved current pin; it accepts no arbitrary source or branch input.
+There are no saved build checkpoints. If a run fails before creating a GitHub
+release, use **Run workflow** on **Release Hermes Light**, selecting `main`.
+It rebuilds, signs, and submits to Apple again.
 
-Signed submission and final archive checkpoints contain only the signed app,
-release pin, checksums, and submission metadata. They have no credentials or
-local paths. A retry verifies checkpoint provenance, configuration and archive
-hash, and resumes the recorded Apple submission. Final checkpoints preserve the
-exact bytes needed to resume partial draft uploads. Existing assets are never
-overwritten. Successful checkpoints are deleted; failed ones expire after
-seven days. If a partial draft has lost its matching checkpoint, stop and
-investigate rather than replace assets.
+If a draft release or tag already exists, the workflow stops rather than
+replacing it. Inspect the failed run, then increase the packaging revision in
+`packaging/source.json` and merge that change to try again with a new tag.
+Existing releases and assets are left untouched.
 
-Releases are serialized. The pin is checked again before publication and cask
-updates so stale runs cannot roll back a newer version. Failed jobs remove
-temporary Keychains, signing files, test installs and downloads, and build
-files. GitHub's workflow summary and failure notifications are the status source.
+If publication succeeded but the Homebrew check or cask commit failed, fix the
+reported problem and recover the cask from the published metadata:
+
+```sh
+make cask
+git add Casks/hermes-light.rb
+git commit -m "Update Hermes Light cask"
+git push
+```
+
+Review the generated cask and verify installation after pushing it. There is
+no need to rebuild or replace the published app.
+
+Releases run one at a time and check the current source pin before publishing
+or committing the cask. Each run removes its temporary signing Keychain,
+private files, test app, downloads, and build tree, including on failure.
+GitHub's normal workflow failure notifications report problems.
 
 ## Local maintenance
 
@@ -100,11 +110,10 @@ git push                    # triggers the cloud release
 Use `REVISION=N` with the current tag for a packaging-only rebuild. The first
 cloud rollout uses revision 2 of the existing upstream pin.
 
-`make release` remains available locally. The CLI supports `--keychain` for an
-explicit signing/notarization Keychain and `--target-commit` for an exact
-packaging commit. `notarize --submit-only`, `checkpoint`, and `restore` provide
-the staged CI interface. `make cask` recovers the cask from the published
-manifest and GitHub's archive digest without downloading the app.
+`make release` remains available locally, using the existing
+`hermes-light-notary` Keychain profile. Use `--keychain` to select a different
+signing/notarization Keychain. `make cask` regenerates the cask from a published
+release's metadata and archive digest without downloading the app.
 
 `make clean` removes managed temporary build files while preserving the final
 ZIP and public manifest. User-supplied source checkouts are preserved. The app
