@@ -2,7 +2,8 @@ name: Validate client release tooling
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -12,24 +13,37 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the source and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
+          package-manager-cache: false
+
       - name: Check release boundaries
         run: python -m unittest discover -s tests -v
+
       - name: Validate Python and signing adapter
         run: |
           python -m py_compile scripts/light_client_release.py
           node --check packaging/sign-app.mjs
+
       - name: Check source, docs, and history for sensitive data
         run: python scripts/check_repository.py --history
+
       - name: Validate published cask syntax when present
         run: |
-          if [ -f Casks/hermes-light.rb ]; then ruby -c Casks/hermes-light.rb; fi
+          if [ -f Casks/hermes-light.rb ]; then
+            ruby -c Casks/hermes-light.rb
+          fi

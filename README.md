@@ -29,6 +29,9 @@ brew upgrade --cask hardworker/hermes-light/hermes-light
 
 Homebrew owns app updates. The gateway is upgraded separately.
 
+Stable upstream releases are proposed in an update PR. After review and merge,
+GitHub Actions builds, signs, notarizes, publishes, and updates this tap.
+
 ## Maintain
 
 The upstream tag and exact commit are pinned in

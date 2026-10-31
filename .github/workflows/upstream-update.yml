@@ -1,0 +1,53 @@
+name: Check upstream release
+
+on:
+  schedule:
+    # Daily at 06:17 UTC.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview the update without changing the PR
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-light-upstream-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Propose an upstream update
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      # Update the source pin branch and its PR; never approve or merge it.
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Check out the source pin and updater
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Maintain one reviewed upstream update PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            python scripts/upstream_update.py --dry-run
+          else
+            python scripts/upstream_update.py
+          fi

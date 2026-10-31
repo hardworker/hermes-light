@@ -1,0 +1,85 @@
+name: Release Hermes Light
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - packaging/source.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-light-release
+  # Let the current release finish before starting another.
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish the macOS client
+    if: github.ref == 'refs/heads/main'
+    environment: release
+    runs-on: xcode-27
+    timeout-minutes: 120
+
+    permissions:
+      # Publish the release and push the updated Homebrew cask.
+      contents: write
+
+    steps:
+      - name: Check out the approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Validate and check release inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SECRETS_CONFIGURED: >-
+            ${{
+              secrets.MACOS_SIGNING_P12_BASE64 != '' &&
+              secrets.MACOS_SIGNING_P12_PASSWORD != '' &&
+              secrets.APPLE_NOTARY_APPLE_ID != '' &&
+              secrets.APPLE_NOTARY_TEAM_ID != '' &&
+              secrets.APPLE_NOTARY_PASSWORD != ''
+            }}
+        run: |
+          python -m unittest discover -s tests -v
+          python scripts/check_repository.py --history
+          python scripts/ci_release.py check
+
+      - name: Build unsigned Light client
+        run: python scripts/light_client_release.py build
+
+      - name: Sign, notarize, and verify
+        env:
+          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: python scripts/ci_release.py sign
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/light_client_release.py publish
+
+      - name: Test Homebrew installation and update the cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/ci_release.py smoke
+          python scripts/ci_release.py commit-cask
+
+      - name: Clean up signing credentials and temporary files
+        if: always()
+        run: python scripts/ci_release.py clean
