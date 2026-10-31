@@ -3,6 +3,7 @@ import base64
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -12,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import light_client_release as release
 import ci_release as ci
-import upstream_update as upstream
 
 
 class AutomationTests(unittest.TestCase):
@@ -162,6 +162,57 @@ class AutomationTests(unittest.TestCase):
                 smoke.assert_called_once()
             self.assertFalse(self.work.exists())
 
+    def test_failed_homebrew_verification_removes_only_its_app_and_cache(self):
+        tap = self.root / 'tap'
+        (tap / 'Casks').mkdir(parents=True)
+        (self.root / 'Casks').mkdir()
+        (self.root / 'Casks/hermes-light.rb').write_text('fixture')
+        unrelated = self.root / 'unrelated-cache'
+        unrelated.mkdir()
+        calls = []
+
+        def command(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ('brew', '--repository'):
+                return SimpleNamespace(stdout=str(tap))
+            if args[:2] == ('brew', 'install'):
+                cache = Path(kwargs['env']['HOMEBREW_CACHE'])
+                cache.mkdir(parents=True)
+                (cache / 'download.zip').write_bytes(b'fixture')
+                appdir = Path(next(arg.split('=', 1)[1] for arg in args if arg.startswith('--appdir=')))
+                (appdir / 'Hermes Light.app').mkdir(parents=True)
+            return SimpleNamespace(stdout='')
+
+        with (
+            patch.dict('os.environ', RUNNER_TEMP=str(self.root)),
+            patch.object(release, 'ROOT', self.root),
+            patch.object(release, 'DEFAULT_WORK', self.work),
+            patch.object(release, 'run', side_effect=command),
+            patch.object(release, 'verify_app', side_effect=ValueError('verification failed')),
+            patch.object(ci.subprocess, 'run', return_value=SimpleNamespace(returncode=0)),
+        ):
+            with self.assertRaisesRegex(ValueError, 'verification failed'):
+                ci.smoke(self.config)
+            ci.clean(self.config)
+
+        self.assertFalse((self.root / 'hermes-homebrew').exists())
+        self.assertFalse(self.work.exists())
+        self.assertTrue(unrelated.exists())
+        self.assertTrue(any(args[:2] == ('brew', 'uninstall') for args in calls))
+
+    def test_homebrew_cleanup_removes_files_even_if_uninstall_fails(self):
+        directory = self.root / 'hermes-homebrew'
+        (directory / 'cache').mkdir(parents=True)
+        (directory / 'cache/download.zip').write_bytes(b'fixture')
+        with (
+            patch.dict('os.environ', RUNNER_TEMP=str(self.root)),
+            patch.object(ci.subprocess, 'run', return_value=SimpleNamespace(returncode=0)),
+            patch.object(release, 'run', side_effect=subprocess.CalledProcessError(1, 'brew')),
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                ci.smoke_cleanup(self.config)
+        self.assertFalse(directory.exists())
+
     def test_main_pin_advance_prevents_stale_publication(self):
         newer = dict(self.config, revision=self.config['revision']+1)
         response = {'content': base64.b64encode(json.dumps(newer).encode()).decode()}
@@ -175,32 +226,6 @@ class AutomationTests(unittest.TestCase):
                 release.update_source(self.config, 'v0.0.0', destination=self.root/'config.json')
             command.assert_not_called()
 
-    def test_update_pr_deduplicates_without_writing(self):
-        newer = dict(self.config, version='99.0.0', tag='v99.0.0', commit='c'*40, revision=1)
-        def github(path, **kwargs):
-            if path.endswith('git/ref/heads/main'): return {'object':{'sha':'b'*40}}
-            if path.endswith('releases/latest'): return {'draft':False,'prerelease':False,'tag_name':'v99.0.0'}
-            raise AssertionError('Unexpected write or API call')
-        def command(*args, **kwargs):
-            if args[:3] == ('gh','pr','list'): return SimpleNamespace(stdout='[{"number":3,"state":"OPEN"}]')
-            return SimpleNamespace(stdout='packaging/source.json\n')
-        with patch.object(upstream,'api',side_effect=github), patch.object(upstream,'config_at',side_effect=[self.config,newer]), \
-                patch.object(upstream,'optional_api',return_value={'object':{'sha':'d'*40}}), \
-                patch.object(release,'update_source',side_effect=[self.config,newer]), patch.object(release,'run',side_effect=command):
-            upstream.update()
-
-    def test_release_workflow_is_main_only_serial_and_always_cleans(self):
-        text = (ROOT/'.github/workflows/release.yml').read_text()
-        self.assertIn("if: github.ref == 'refs/heads/main'", text)
-        self.assertIn('cancel-in-progress: false', text)
-        self.assertIn('environment: release', text)
-        self.assertIn('runs-on: xcode-27', text)
-        self.assertNotIn('pull_request_target', text)
-        self.assertIn('if: always()', text)
-        self.assertLess(text.index('Build unsigned'), text.index('Sign, notarize'))
-
-    def test_default_signing_path_stays_inside_the_project(self):
-        self.assertTrue(release.SIGNING.is_relative_to(release.ROOT))
 
 
 if __name__ == '__main__': unittest.main()

@@ -46,6 +46,21 @@ class LightReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "local agent payload"):
             release.inspect_app(self.app, self.config)
 
+    def test_candidate_records_the_built_app_and_includes_the_upstream_license(self):
+        source = self.root / "source"
+        source.mkdir()
+        (source / "LICENSE").write_text("upstream license")
+        work = self.root / "work"
+        with patch.object(release, "run") as command:
+            command.return_value.stdout = "b" * 40
+            release.record_candidate(self.config, work, source, self.app)
+        manifest = json.loads((work / "candidate.json").read_text())
+        self.assertEqual(manifest["app"], str(self.app.resolve()))
+        self.assertEqual(manifest["packaging_commit"], "b" * 40)
+        resources = self.app / "Contents/Resources"
+        self.assertEqual((resources / "Hermes-UPSTREAM-LICENSE").read_text(), "upstream license")
+        self.assertIn(self.config["commit"], (resources / "INDEPENDENT-DISTRIBUTION.txt").read_text())
+
     def manifest(self):
         archive = self.root / release.archive_name(self.config)
         archive.write_bytes(b"signed release fixture")

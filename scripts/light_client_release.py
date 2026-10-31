@@ -7,6 +7,7 @@ Apple authentication stays in a local notarytool Keychain profile.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -17,19 +18,21 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "packaging/source.json"
 DEFAULT_WORK = ROOT / ".build/hermes-light"
-SIGNING = Path(os.environ.get("HERMES_LIGHT_SIGNING_DIR",
-                             ROOT / "secrets/apple-signing")).expanduser()
 
 
-def run(*args, cwd=None, env=None, capture=False, input=None):
-    return subprocess.run([str(arg) for arg in args], cwd=cwd, env=env, check=True,
-                          text=True, input=input, stdout=subprocess.PIPE if capture else None,
-                          stderr=subprocess.PIPE if capture else None)
+def run(*args, cwd=None, env=None, capture=False):
+    return subprocess.run(
+        [str(arg) for arg in args],
+        cwd=cwd or ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=capture,
+    )
 
 
 def validate_config(config):
@@ -51,7 +54,7 @@ def read_config():
     return validate_config(json.loads(CONFIG.read_text()))
 
 
-def update_source(config, tag, revision=None, destination=CONFIG):
+def resolve_source(config, tag, revision=None):
     if not tag or not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
         raise ValueError("Specify a stable upstream tag, for example --tag vX.Y.Z")
     if tuple(map(int, tag[1:].split('.'))) < tuple(map(int, config['version'].split('.'))):
@@ -71,29 +74,27 @@ def update_source(config, tag, revision=None, destination=CONFIG):
         raise ValueError("Upstream moved an already pinned tag; review it before changing the pin")
     if revision is None:
         revision = config["revision"] if same_version else 1
-    updated = validate_config(dict(config, tag=tag, commit=commit, version=tag[1:], revision=revision))
-    if updated == config:
-        print(f"Already pinned to {tag}, revision {revision}")
-        return config
-    if same_version and revision <= config["revision"]:
+    updated = validate_config(dict(
+        config, tag=tag, commit=commit, version=tag[1:], revision=revision
+    ))
+    if same_version and updated != config and revision <= config["revision"]:
         raise ValueError("A packaging revision must increase")
-    write_json(destination, updated)
-    print(f"Pinned {tag} to {commit}, revision {revision}; review and commit packaging/source.json")
+    return updated
+
+
+def update_source(config, tag, revision=None, destination=CONFIG):
+    updated = resolve_source(config, tag, revision)
+    if updated == config:
+        print(f"Already pinned to {tag}, revision {updated['revision']}")
+    else:
+        write_json(destination, updated)
+        print(f"Pinned {tag} to {updated['commit']}; review and commit packaging/source.json")
     return updated
 
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False, prefix='.state-', encoding='utf-8') as f:
-        temporary = Path(f.name)
-        try:
-            f.write(json.dumps(value, indent=2) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
-    temporary.replace(path)
+    path.write_text(json.dumps(value, indent=2) + "\n")
 
 
 def checksum(path):
@@ -137,7 +138,7 @@ def build(config, work, source):
     if candidate.exists():
         manifest = json.loads(candidate.read_text())
         if manifest["config"] != config:
-            raise ValueError("Existing candidate belongs to a different release; use a separate work directory")
+            raise ValueError("Existing candidate belongs to another release; use another work directory")
         inspect_app(Path(manifest["app"]), config)
         print(f"Reusing candidate: {manifest['app']}")
         return
@@ -165,59 +166,24 @@ def build(config, work, source):
 
 def record_candidate(config, work, source, app):
     info = inspect_app(app, config)
-    target = work / "candidate" / app.name
-    if target.exists():
-        raise ValueError("Candidate exists; preserve or remove the previous build explicitly")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    run("ditto", app, target)
-    resources = target / "Contents/Resources"
+    resources = app / "Contents/Resources"
     (resources / "Hermes-UPSTREAM-LICENSE").write_bytes((source / "LICENSE").read_bytes())
     (resources / "INDEPENDENT-DISTRIBUTION.txt").write_text(
         f"Independent Hermes Light distribution from {config['tag']} ({config['commit']}).\n"
         "Upstream: Nous Research / https://github.com/NousResearch/hermes-agent\n"
         "No local agent payload. Distribution and Homebrew updates are maintained separately.\n")
-    manifest = {"config": config, "app": str(target.resolve()), "source": str(source.resolve()),
-                "bundle_identifier": info["CFBundleIdentifier"],
-                "app_version": info["CFBundleShortVersionString"], "notarization_status": "not_submitted"}
-    manifest['packaging_commit'] = run('git', 'rev-parse', 'HEAD', cwd=ROOT, capture=True).stdout.strip()
+    manifest = {
+        "config": config,
+        "app": str(app.resolve()),
+        "source": str(source.resolve()),
+        "bundle_identifier": info["CFBundleIdentifier"],
+        "app_version": info["CFBundleShortVersionString"],
+        "notarization_status": "not_submitted",
+        "packaging_commit": run('git', 'rev-parse', 'HEAD', capture=True).stdout.strip(),
+    }
     write_json(work / "candidate.json", manifest)
-    print(f"Light client candidate: {target}")
+    print(f"Light client candidate: {app}")
     print("Candidate is not distributable until signing and notarization succeed.")
-
-
-def signing_request(directory):
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(directory, 0o700)
-    key = directory / "developer-id-private.pem"
-    request = directory / "hermes-light.certSigningRequest"
-    if key.is_symlink() or request.is_symlink():
-        raise ValueError("Signing files must not be symlinks")
-    if not key.exists():
-        old_mask = os.umask(0o077)
-        try:
-            run("openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", key)
-        finally:
-            os.umask(old_mask)
-    os.chmod(key, 0o600)
-    if not request.exists():
-        run("openssl", "req", "-new", "-key", key, "-out", request, "-subj", "/CN=Hermes Light Distribution")
-    run("openssl", "req", "-in", request, "-noout", "-verify")
-    print(f"Certificate request: {request}")
-    print("Create a Developer ID Application certificate in Apple Developer using this request.")
-
-
-def import_certificate(directory, certificate):
-    require_mac()
-    key = directory / "developer-id-private.pem"
-    expected = run("openssl", "pkey", "-in", key, "-pubout", capture=True).stdout.strip()
-    actual = run("openssl", "x509", "-inform", "DER", "-in", certificate, "-pubkey", "-noout", capture=True).stdout.strip()
-    if actual != expected:
-        raise ValueError("Certificate does not match the locally generated private key")
-    # Trust only codesign for the imported signing key; never use security import -A.
-    keychain = run("security", "default-keychain", "-d", "user", capture=True).stdout.strip().strip('"')
-    run("security", "import", key, "-k", keychain, "-T", "/usr/bin/codesign")
-    run("security", "import", certificate, "-k", keychain)
-    run("security", "find-identity", "-v", "-p", "codesigning")
 
 
 def select_identity(requested=None, keychain=None):
@@ -229,7 +195,7 @@ def select_identity(requested=None, keychain=None):
     if requested:
         identities = [(digest, name) for digest, name in identities if requested in (digest, name)]
     if len(identities) != 1:
-        raise ValueError("Exactly one matching Developer ID Application identity is required; finish signing setup or pass --identity")
+        raise ValueError("Select one Developer ID Application identity, or pass --identity")
     return identities[0][0]
 
 
@@ -242,8 +208,10 @@ def notarize(config, work, profile, identity, keychain=None):
     inspect_app(app, config)
     identity = select_identity(identity, keychain)
     prepared = json.loads((source / ".build/desktop-job/prepared.json").read_text())
-    run(prepared["node"], ROOT / "packaging/sign-app.mjs", source, app, identity, str(keychain) if keychain else '')
-    run("codesign", "--verify", "--deep", "--strict", app)
+    run(
+        prepared["node"], ROOT / "packaging/sign-app.mjs", source, app, identity,
+        str(keychain) if keychain else ''
+    )
     upload = work / "notary-upload.zip"
     run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, upload)
     credentials = ['--keychain-profile', profile]
@@ -255,15 +223,23 @@ def notarize(config, work, profile, identity, keychain=None):
     manifest.update(notarization_id=submission["id"], notarization_status=submission["status"])
     write_json(work / "candidate.json", manifest)
     if submission["status"] != "Accepted":
-        raise ValueError(f"Apple notarization is {submission['status']}; inspect submission {submission['id']}")
+        raise ValueError(
+            f"Apple notarization is {submission['status']}; inspect submission {submission['id']}"
+        )
     run("xcrun", "stapler", "staple", app)
-    run("xcrun", "stapler", "validate", app)
-    run("spctl", "--assess", "--type", "execute", "--verbose", app)
+    verify_app(app, config)
     archive = work / archive_name(config)
     run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, archive)
     manifest.update(archive=str(archive.resolve()), sha256=checksum(archive))
     write_json(work / "release.json", manifest)
     print(f"Notarized release: {archive}")
+
+
+def verify_app(app, config):
+    inspect_app(app, config)
+    run("codesign", "--verify", "--deep", "--strict", app)
+    run("xcrun", "stapler", "validate", app)
+    run("spctl", "--assess", "--type", "execute", "--verbose", app)
 
 
 def release_tag(config):
@@ -326,8 +302,10 @@ def sync_cask(config):
     tag, repository = release_tag(config), config["distribution_repository"]
     published = json.loads(run("gh", "release", "view", tag, "--repo", repository,
                                "--json", "assets,isDraft", capture=True).stdout)
-    manifest = json.loads(run("gh", "release", "download", tag, "--repo", repository,
-                              "--pattern", "release-manifest.json", "--output", "-", capture=True).stdout)
+    manifest = json.loads(run(
+        "gh", "release", "download", tag, "--repo", repository,
+        "--pattern", "release-manifest.json", "--output", "-", capture=True
+    ).stdout)
     if (published["isDraft"] or manifest.get("config") != config
             or manifest.get("notarization_status") != "Accepted"):
         raise ValueError("Published release must match this pin and be Apple-accepted")
@@ -345,23 +323,27 @@ def sync_cask(config):
 
 
 def get_release(config):
-    result = subprocess.run(['gh', 'release', 'view', release_tag(config), '--repo',
-                             config['distribution_repository'], '--json', 'assets,isDraft,targetCommitish,url'],
-                            capture_output=True, text=True)
+    result = subprocess.run(
+        ['gh', 'release', 'view', release_tag(config), '--repo',
+         config['distribution_repository'], '--json', 'assets,isDraft'],
+        capture_output=True, text=True,
+    )
     if result.returncode:
         if 'release not found' in result.stderr.lower() or 'HTTP 404' in result.stderr:
             return None
-        raise ValueError('Unable to inspect the release; refusing to treat an API failure as a missing release')
+        raise ValueError('Unable to inspect the release (API failure)')
     return json.loads(result.stdout)
 
 
 def assert_current_pin(config):
-    import base64
-    content = run('gh', 'api', f"repos/{config['distribution_repository']}/contents/packaging/source.json?ref=main",
-                  capture=True).stdout
+    content = run(
+        'gh', 'api',
+        f"repos/{config['distribution_repository']}/contents/packaging/source.json?ref=main",
+        capture=True,
+    ).stdout
     remote = json.loads(base64.b64decode(json.loads(content)['content']))
     if remote != config:
-        raise ValueError('Main now pins a different release; this stale run must not publish or update the cask')
+        raise ValueError('Main pins another release; refusing stale publication')
 
 
 def verify_assets(published, files):
@@ -369,13 +351,13 @@ def verify_assets(published, files):
     for path in files:
         asset = indexed.get(path.name)
         if asset is None or asset.get('digest') != 'sha256:' + checksum(path):
-            raise ValueError('Release asset is missing or has a different digest; existing assets will not be replaced')
+            raise ValueError('Release asset is missing or has a different digest; refusing publication')
 
 
 def assert_new_release(config):
     assert_current_pin(config)
     if get_release(config) is not None:
-        raise ValueError('This release already exists, including a possible partial draft; see docs/RELEASING.md before retrying')
+        raise ValueError('Release already exists; see docs/RELEASING.md before retrying')
     refs = run('git', 'ls-remote', '--tags',
                f"https://github.com/{config['distribution_repository']}.git",
                f"refs/tags/{release_tag(config)}", capture=True).stdout
@@ -389,32 +371,39 @@ def publish(config, work):
     manifest = json.loads((work / "release.json").read_text())
     archive = validate_release(manifest, config)
     app = Path(manifest["app"])
-    inspect_app(app, config)
-    run("codesign", "--verify", "--deep", "--strict", app)
-    run("xcrun", "stapler", "validate", app)
-    run("spctl", "--assess", "--type", "execute", app)
+    verify_app(app, config)
     tag, repository = release_tag(config), config["distribution_repository"]
-    visibility = json.loads(run("gh", "repo", "view", repository, "--json", "isPrivate", capture=True).stdout)
+    visibility = json.loads(run(
+        "gh", "repo", "view", repository, "--json", "isPrivate", capture=True
+    ).stdout)
     if visibility["isPrivate"]:
         raise ValueError("The combined Light client and Homebrew tap repository must be public")
     target_commit = manifest.get('packaging_commit', '')
     if not re.fullmatch(r'[a-f0-9]{40}', target_commit):
         raise ValueError('Publication requires an exact packaging commit')
     notes = work / "release-notes.md"
-    notes.write_text(f"Independent Apple Silicon Hermes Light client from upstream {config['tag']} "
-                     f"({config['commit']}). Includes no local agent/Python payload.\n\n"
-                     f"Developer ID signed, Apple notarization {manifest['notarization_id']} accepted, "
-                     "ticket stapled and Gatekeeper verified.\n")
+    notes.write_text(
+        f"Independent Apple Silicon Hermes Light client from upstream {config['tag']} "
+        f"({config['commit']}). Includes no local agent/Python payload.\n\n"
+        f"Developer ID signed, Apple notarization {manifest['notarization_id']} accepted, "
+        "ticket stapled and Gatekeeper verified.\n"
+    )
     # Distribution metadata deliberately excludes local filesystem paths.
-    public = {key: manifest[key] for key in ("config", "bundle_identifier", "app_version", "sha256",
-                                             "notarization_id", "notarization_status")}
+    public_fields = (
+        "config", "bundle_identifier", "app_version", "sha256",
+        "notarization_id", "notarization_status",
+    )
+    public = {key: manifest[key] for key in public_fields}
     public["app_name"] = app.name
     public['packaging_commit'] = target_commit
     public_manifest = work / "release-manifest.json"
     write_json(public_manifest, public)
-    run('gh', 'release', 'create', tag, '--draft', '--repo', repository,
-        '--target', target_commit, '--title', f"Hermes Light {config['version']} revision {config['revision']}",
-        '--notes-file', notes)
+    run(
+        'gh', 'release', 'create', tag, '--draft', '--repo', repository,
+        '--target', target_commit,
+        '--title', f"Hermes Light {config['version']} revision {config['revision']}",
+        '--notes-file', notes,
+    )
     run('gh', 'release', 'upload', tag, public_manifest, archive, '--repo', repository)
     verify_assets(get_release(config), (public_manifest, archive))
     assert_current_pin(config)
@@ -422,7 +411,7 @@ def publish(config, work):
     destination = ROOT / "Casks/hermes-light.rb"
     destination.parent.mkdir(exist_ok=True)
     destination.write_text(cask_text(manifest, config))
-    print(f"Cask generated: {destination}; commit it to the tap before sharing brew install instructions.")
+    print(f"Cask generated: {destination}; commit it to publish the tap update")
 
 
 def release_all(config, work, source, profile, identity, keychain=None):
@@ -436,7 +425,11 @@ def clean_work(work):
     work = work.resolve()
     if work in (ROOT.resolve(), Path.home(), Path("/")):
         raise ValueError("Refusing to clean an unsafe work directory")
-    for name in ("source", "candidate", "candidate.json", "notary-upload.zip", "release.json", "release-notes.md"):
+    temporary_files = (
+        "source", "candidate", "candidate.json", "notary-upload.zip",
+        "release.json", "release-notes.md",
+    )
+    for name in temporary_files:
         target = work / name
         if target.is_symlink() or target.is_file():
             target.unlink()
@@ -447,13 +440,13 @@ def clean_work(work):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["update", "release", "build", "request", "import-certificate",
-                                            "notarize", "publish", "cask", "clean"])
+    parser.add_argument(
+        "action", choices=["update", "release", "build", "notarize", "publish", "cask", "clean"]
+    )
     parser.add_argument("--work", type=Path)
     parser.add_argument("--tag", help="Stable upstream tag to pin, used by update")
     parser.add_argument("--revision", type=int, help="Packaging revision, used by update")
     parser.add_argument("--source", type=Path)
-    parser.add_argument("--certificate", type=Path, default=SIGNING / "developerID_application.cer")
     parser.add_argument("--profile", default="hermes-light-notary")
     parser.add_argument("--identity")
     parser.add_argument('--keychain', type=Path, help='Explicit signing/notarization Keychain')
@@ -463,10 +456,6 @@ def main():
     source = args.source or work / "source"
     if args.action == "update":
         update_source(config, args.tag, args.revision)
-    elif args.action == "request":
-        signing_request(SIGNING)
-    elif args.action == "import-certificate":
-        import_certificate(SIGNING, args.certificate)
     elif args.action == "build":
         build(config, work, source)
     elif args.action == "notarize":
