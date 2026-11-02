@@ -42,9 +42,21 @@ through **Settings → Environments → release**:
    | `APPLE_NOTARY_TEAM_ID` | Your Team ID |
    | `APPLE_NOTARY_PASSWORD` | A new CI-only app-specific password from [Apple Account](https://account.apple.com) |
 
-Keep secret values out of source files, PRs, and chat. CI imports credentials
-into a temporary Keychain after building, removes them after signing, and
-cleans its test app, dedicated Homebrew cache, and build files on failure too.
+Keep secret values out of source files, PRs, and chat.
+[Apple-Actions/import-codesign-certs](https://github.com/Apple-Actions/import-codesign-certs)
+imports the certificate after building and deletes its temporary Keychain
+in post-job cleanup, including after failures. The existing five secrets
+are reused. Python does not decode certificates or create Keychains.
+
+Signing retains upstream's locked `@electron/osx-sign` and entitlements.
+The separately locked
+[`@electron/notarize`](https://github.com/electron/notarize) library submits
+the app, waits for acceptance, and staples the ticket. Signature, ticket,
+and Gatekeeper checks must pass before the distribution ZIP is created.
+The release manifest records acceptance and the notarization tool; this
+library does not return a submission ID. CI also cleans its test app,
+dedicated Homebrew cache, and build files on failure.
+
 After the first successful release, delete the temporary export:
 
 ```sh
@@ -78,6 +90,13 @@ Review the cask before committing and verify installation after pushing.
 GitHub's normal workflow failure notifications report problems.
 
 ## Local commands
+
+Use Node.js 22.12+ and Python 3.12+ for release maintenance. Before running
+tests or signing from a fresh checkout, install the locked tooling:
+
+```sh
+npm ci --prefix packaging --ignore-scripts --no-audit --no-fund
+```
 
 ```sh
 make update TAG=vX.Y.Z       # resolve and review a stable upstream pin

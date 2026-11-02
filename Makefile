@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 PYTHON ?= python3
+NODE ?= node
 .DEFAULT_GOAL := help
 .PHONY: help test update release build notarize publish cask clean
 
@@ -10,6 +11,7 @@ help:
 
 test:
 	@$(PYTHON) -m unittest discover -s tests -v
+	@$(NODE) --test tests/*.test.mjs
 
 update:
 	@$(PYTHON) scripts/light_client_release.py update --tag "$(TAG)" $(if $(REVISION),--revision "$(REVISION)")

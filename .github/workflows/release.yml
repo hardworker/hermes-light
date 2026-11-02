@@ -40,6 +40,15 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Install locked notarization tools
+        run: npm ci --prefix packaging --ignore-scripts --no-audit --no-fund
+
       - name: Validate and check release inputs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,21 +61,38 @@ jobs:
               secrets.APPLE_NOTARY_PASSWORD != ''
             }}
         run: |
-          python -m unittest discover -s tests -v
+          make test
           python scripts/check_repository.py --history
           python scripts/ci_release.py check
 
       - name: Build unsigned Light client
         run: python scripts/light_client_release.py build
 
+      - name: Import the signing identity into a temporary Keychain
+        uses: Apple-Actions/import-codesign-certs@288b8ec97b82c66b6f2a6baaf7acc8dfbcbe331c # v7.2.0
+        with:
+          keychain: hermes-light-ci
+          p12-file-base64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          p12-password: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+
+      - name: Trust the Apple Developer ID intermediate
+        run: |
+          certificate="$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          curl --fail --silent --show-error --proto '=https' \
+            --output "$certificate" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security verify-cert -c "$certificate"
+          security import "$certificate" -k "$HOME/Library/Keychains/hermes-light-ci.keychain-db"
+          rm "$certificate"
+
       - name: Sign, notarize, and verify
         env:
-          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
-          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
           APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
           APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
           APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
-        run: python scripts/ci_release.py sign
+        run: |
+          python scripts/light_client_release.py notarize \
+            --keychain "$HOME/Library/Keychains/hermes-light-ci.keychain-db" --profile ''
 
       - name: Publish verified release
         env:
@@ -80,6 +106,7 @@ jobs:
           python scripts/ci_release.py smoke
           python scripts/ci_release.py commit-cask
 
-      - name: Clean up signing credentials and temporary files
+      # The certificate action deletes its Keychain in its own post-job cleanup.
+      - name: Clean up temporary build and Homebrew files
         if: always()
         run: python scripts/ci_release.py clean

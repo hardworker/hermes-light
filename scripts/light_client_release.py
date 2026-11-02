@@ -2,7 +2,7 @@
 """Build, notarize and publish the pinned remote-only Hermes Desktop client.
 
 No agent runtime is installed on the build host or included in the client.
-Apple authentication stays in a local notarytool Keychain profile.
+Apple authentication uses a local Keychain profile or CI environment secrets.
 """
 from __future__ import annotations
 
@@ -210,24 +210,12 @@ def notarize(config, work, profile, identity, keychain=None):
     prepared = json.loads((source / ".build/desktop-job/prepared.json").read_text())
     run(
         prepared["node"], ROOT / "packaging/sign-app.mjs", source, app, identity,
-        str(keychain) if keychain else ''
+        str(keychain) if keychain else '', profile or ''
     )
-    upload = work / "notary-upload.zip"
-    run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, upload)
-    credentials = ['--keychain-profile', profile]
-    if keychain:
-        credentials += ['--keychain', str(keychain)]
-    result = run("xcrun", "notarytool", "submit", upload, *credentials,
-                 "--wait", "--timeout", "30m", "--output-format", "json", capture=True)
-    submission = json.loads(result.stdout)
-    manifest.update(notarization_id=submission["id"], notarization_status=submission["status"])
-    write_json(work / "candidate.json", manifest)
-    if submission["status"] != "Accepted":
-        raise ValueError(
-            f"Apple notarization is {submission['status']}; inspect submission {submission['id']}"
-        )
-    run("xcrun", "stapler", "staple", app)
     verify_app(app, config)
+    manifest.pop("notarization_id", None)
+    manifest.update(notarization_status="Accepted", notarization_tool="@electron/notarize")
+    write_json(work / "candidate.json", manifest)
     archive = work / archive_name(config)
     run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, archive)
     manifest.update(archive=str(archive.resolve()), sha256=checksum(archive))
@@ -385,15 +373,19 @@ def publish(config, work):
     notes.write_text(
         f"Independent Apple Silicon Hermes Light client from upstream {config['tag']} "
         f"({config['commit']}). Includes no local agent/Python payload.\n\n"
-        f"Developer ID signed, Apple notarization {manifest['notarization_id']} accepted, "
+        "Developer ID signed, Apple notarization accepted, "
         "ticket stapled and Gatekeeper verified.\n"
     )
     # Distribution metadata deliberately excludes local filesystem paths.
     public_fields = (
         "config", "bundle_identifier", "app_version", "sha256",
-        "notarization_id", "notarization_status",
+        "notarization_status",
     )
     public = {key: manifest[key] for key in public_fields}
+    # Electron's notarization API returns after acceptance without a submission ID.
+    for key in ("notarization_id", "notarization_tool"):
+        if key in manifest:
+            public[key] = manifest[key]
     public["app_name"] = app.name
     public['packaging_commit'] = target_commit
     public_manifest = work / "release-manifest.json"

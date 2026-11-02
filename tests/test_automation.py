@@ -1,4 +1,4 @@
-"""Release publication, signing cleanup, and upstream-update boundaries."""
+"""Release publication, notarization gates, and upstream-update boundaries."""
 import base64
 import json
 from pathlib import Path
@@ -40,32 +40,51 @@ class AutomationTests(unittest.TestCase):
                          'app_version': self.config['version'], 'notarization_status': 'not_submitted',
                          'packaging_commit': 'b' * 40}
 
-    def test_notarization_waits_and_rejects_unaccepted_submissions(self):
-        release.write_json(self.work / 'candidate.json', self.manifest)
+    def test_notarization_and_verification_must_succeed_before_archiving(self):
         prepared = self.work / 'source/.build/desktop-job/prepared.json'
         prepared.parent.mkdir(parents=True)
-        prepared.write_text(json.dumps({'node': 'node'}))
-        for status in ('Invalid', 'Accepted'):
+        prepared.write_text(json.dumps({'node': 'fixture-node'}))
+        scenarios = [('helper', 'fixture-profile'), ('verification', 'fixture-profile'),
+                     (None, 'fixture-profile'), (None, '')]
+        for failure, profile in scenarios:
+            candidate = dict(self.manifest, notarization_id='previous-submission')
+            release.write_json(self.work / 'candidate.json', candidate)
+            (self.work / 'release.json').unlink(missing_ok=True)
             calls = []
+
             def command(*args, **kwargs):
                 calls.append(args)
-                if args[0] == 'ditto': Path(args[-1]).write_bytes(b'signed archive')
-                return SimpleNamespace(stdout=json.dumps({'id': 'submission-id', 'status': status}))
-            with self.subTest(status=status), patch.object(release, 'require_mac'), \
-                    patch.object(release, 'select_identity', return_value='b'*40), \
-                    patch.object(release, 'run', side_effect=command):
-                if status == 'Invalid':
-                    with self.assertRaisesRegex(ValueError, 'Invalid'):
-                        release.notarize(self.config, self.work, 'fixture', None, Path('ci.keychain'))
+                failed_helper = failure == 'helper' and args[0] == 'fixture-node'
+                failed_verification = failure == 'verification' and args[0] == 'spctl'
+                if failed_helper or failed_verification:
+                    raise subprocess.CalledProcessError(1, args)
+                if args[0] == 'ditto':
+                    Path(args[-1]).write_bytes(b'signed archive')
+                return SimpleNamespace(stdout='')
+
+            with (
+                self.subTest(failure=failure, profile=profile),
+                patch.object(release, 'require_mac'),
+                patch.object(release, 'select_identity', return_value='b' * 40),
+                patch.object(release, 'run', side_effect=command),
+            ):
+                if failure:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        release.notarize(self.config, self.work, profile, None, Path('ci.keychain'))
                     self.assertFalse((self.work / 'release.json').exists())
-                    self.assertFalse(any(args[:2] == ('xcrun', 'stapler') for args in calls))
+                    self.assertFalse(any(args[0] == 'ditto' for args in calls))
+                    candidate = json.loads((self.work / 'candidate.json').read_text())
+                    self.assertEqual(candidate['notarization_status'], 'not_submitted')
                 else:
-                    release.notarize(self.config, self.work, 'fixture', None, Path('ci.keychain'))
+                    release.notarize(self.config, self.work, profile, None, Path('ci.keychain'))
                     manifest = json.loads((self.work / 'release.json').read_text())
                     release.validate_release(manifest, self.config)
-                submit = next(args for args in calls if args[:3] == ('xcrun', 'notarytool', 'submit'))
-                self.assertIn('--wait', submit)
-                self.assertIn('ci.keychain', submit)
+                    self.assertEqual(manifest['notarization_tool'], '@electron/notarize')
+                    self.assertNotIn('notarization_id', manifest)
+                    commands = [args[0] for args in calls]
+                    self.assertLess(commands.index('spctl'), commands.index('ditto'))
+                helper = next(args for args in calls if args[0] == 'fixture-node')
+                self.assertEqual(helper[-2:], ('ci.keychain', profile))
 
     def test_existing_release_or_draft_stops_before_build_or_upload(self):
         for draft in (False, True):
@@ -94,7 +113,7 @@ class AutomationTests(unittest.TestCase):
     def test_draft_is_published_only_after_all_uploaded_digests_match(self):
         archive = self.work / release.archive_name(self.config)
         archive.write_bytes(b'signed archive')
-        manifest = dict(self.manifest, notarization_status='Accepted', notarization_id='submission-id',
+        manifest = dict(self.manifest, notarization_status='Accepted', notarization_tool='@electron/notarize',
                         archive=str(archive), sha256=release.checksum(archive))
         release.write_json(self.work / 'release.json', manifest)
         for tampered in (True, False):
@@ -124,6 +143,11 @@ class AutomationTests(unittest.TestCase):
                 else:
                     release.publish(self.config, self.work)
                     self.assertIn(manifest['sha256'], (self.root/'Casks/hermes-light.rb').read_text())
+                    public = json.loads((self.work / 'release-manifest.json').read_text())
+                    self.assertEqual(public['notarization_tool'], '@electron/notarize')
+                    self.assertNotIn('notarization_id', public)
+                    self.assertNotIn('source', public)
+                    self.assertNotIn('app', public)
             published = [args for args in calls if args[:3] == ('gh', 'release', 'edit')]
             self.assertEqual(bool(published), not tampered)
             create = next(args for args in calls if args[:3] == ('gh', 'release', 'create'))
@@ -131,93 +155,14 @@ class AutomationTests(unittest.TestCase):
             self.assertIn('--draft', create)
             self.assertFalse(any('--clobber' in args for args in calls))
 
-    def test_failed_import_or_notarization_still_cleans_signing_credentials(self):
-        for stage in ('setup', 'notarize'):
-            with self.subTest(stage=stage), \
-                    patch.object(ci, 'signing_setup', side_effect=ValueError('setup failed') if stage=='setup' else None,
-                                 return_value=(Path('ci.keychain'), 'identity')), \
-                    patch.object(release, 'notarize', side_effect=ValueError('notarize failed')), \
-                    patch.object(ci, 'signing_cleanup') as cleanup:
-                with self.assertRaises(ValueError):
-                    ci.sign(self.config, self.work)
-                cleanup.assert_called_once()
-
-    def test_signing_import_accepts_wrapped_base64_and_preserves_export_bytes(self):
-        certificate_data = b'PKCS12 fixture bytes, never a real signing identity'
-        encoded = base64.b64encode(certificate_data).decode('ascii')
-        wrapped = '\r\n'.join(encoded[index:index + 16] for index in range(0, len(encoded), 16))
-        for value in (encoded, encoded + '\n', ' \t' + wrapped + '\r\n'):
-            imports = []
-
-            def secure(*args):
-                if args[:2] == ('security', 'import'):
-                    certificate = Path(args[2])
-                    imports.append(certificate.read_bytes())
-                    self.assertEqual(certificate.stat().st_mode & 0o777, 0o600)
-
-            with (
-                self.subTest(value=value),
-                patch.dict('os.environ', {
-                    'RUNNER_TEMP': str(self.root),
-                    'MACOS_SIGNING_P12_BASE64': value,
-                    'MACOS_SIGNING_P12_PASSWORD': 'fixture',
-                    'APPLE_NOTARY_APPLE_ID': 'fixture',
-                    'APPLE_NOTARY_TEAM_ID': 'fixture',
-                    'APPLE_NOTARY_PASSWORD': 'fixture',
-                }),
-                patch.object(ci, 'secure', side_effect=secure),
-                patch.object(release, 'run'),
-                patch.object(release, 'select_identity', return_value='fixture-identity'),
-            ):
-                try:
-                    keychain, identity = ci.signing_setup()
-                    self.assertEqual(imports, [certificate_data])
-                    self.assertEqual(keychain, self.root / 'hermes-signing/release.keychain-db')
-                    self.assertEqual(identity, 'fixture-identity')
-                    self.assertFalse((self.root / 'hermes-signing/identity.p12').exists())
-                finally:
-                    ci.signing_cleanup()
-
-    def test_invalid_signing_export_fails_without_commands_or_secret_disclosure(self):
-        encoded = base64.b64encode(b'fixture').decode('ascii')
-        for value in ('', ' \r\n\t', encoded + '!private-input', encoded + encoded,
-                      encoded[:-1], encoded + '\N{NO-BREAK SPACE}'):
-            with (
-                self.subTest(value=value),
-                patch.dict('os.environ', {
-                    'RUNNER_TEMP': str(self.root),
-                    'MACOS_SIGNING_P12_BASE64': value,
-                }),
-                patch.object(ci, 'secure') as secure,
-                patch.object(release, 'run') as command,
-            ):
-                with self.assertRaisesRegex(ValueError, 'MACOS_SIGNING_P12_BASE64') as error:
-                    ci.sign(self.config, self.work)
-                if value.strip():
-                    self.assertNotIn(value, str(error.exception))
-                secure.assert_not_called()
-                command.assert_not_called()
-                self.assertFalse((self.root / 'hermes-signing').exists())
-
-    def test_signing_files_are_removed_even_if_keychain_deletion_fails(self):
-        directory = self.root/'hermes-signing'
-        directory.mkdir()
-        (directory/'release.keychain-db').write_bytes(b'fixture')
-        (directory/'identity.p12').write_bytes(b'fixture')
-        with patch.dict('os.environ', RUNNER_TEMP=str(self.root)), \
-                patch.object(ci, 'secure', side_effect=ValueError('delete failed')):
-            with self.assertRaises(ValueError): ci.signing_cleanup()
-        self.assertFalse(directory.exists())
-
-    def test_cleanup_attempts_every_stage_after_an_earlier_failure(self):
-        for stage in ('signing', 'smoke'):
-            self.work.mkdir(exist_ok=True)
-            with self.subTest(stage=stage), patch.object(release, 'DEFAULT_WORK', self.work), \
-                    patch.object(ci, 'signing_cleanup', side_effect=ValueError('failed') if stage=='signing' else None), \
-                    patch.object(ci, 'smoke_cleanup', side_effect=ValueError('failed') if stage=='smoke' else None) as smoke:
-                with self.assertRaises(ValueError): ci.clean(self.config)
-                smoke.assert_called_once()
-            self.assertFalse(self.work.exists())
+    def test_build_files_are_removed_even_if_homebrew_cleanup_fails(self):
+        with (
+            patch.object(release, 'DEFAULT_WORK', self.work),
+            patch.object(ci, 'smoke_cleanup', side_effect=ValueError('cleanup failed')),
+        ):
+            with self.assertRaisesRegex(ValueError, 'cleanup failed'):
+                ci.clean(self.config)
+        self.assertFalse(self.work.exists())
 
     def test_failed_homebrew_verification_removes_only_its_app_and_cache(self):
         tap = self.root / 'tap'
