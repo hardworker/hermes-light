@@ -142,6 +142,63 @@ class AutomationTests(unittest.TestCase):
                     ci.sign(self.config, self.work)
                 cleanup.assert_called_once()
 
+    def test_signing_import_accepts_wrapped_base64_and_preserves_export_bytes(self):
+        certificate_data = b'PKCS12 fixture bytes, never a real signing identity'
+        encoded = base64.b64encode(certificate_data).decode('ascii')
+        wrapped = '\r\n'.join(encoded[index:index + 16] for index in range(0, len(encoded), 16))
+        for value in (encoded, encoded + '\n', ' \t' + wrapped + '\r\n'):
+            imports = []
+
+            def secure(*args):
+                if args[:2] == ('security', 'import'):
+                    certificate = Path(args[2])
+                    imports.append(certificate.read_bytes())
+                    self.assertEqual(certificate.stat().st_mode & 0o777, 0o600)
+
+            with (
+                self.subTest(value=value),
+                patch.dict('os.environ', {
+                    'RUNNER_TEMP': str(self.root),
+                    'MACOS_SIGNING_P12_BASE64': value,
+                    'MACOS_SIGNING_P12_PASSWORD': 'fixture',
+                    'APPLE_NOTARY_APPLE_ID': 'fixture',
+                    'APPLE_NOTARY_TEAM_ID': 'fixture',
+                    'APPLE_NOTARY_PASSWORD': 'fixture',
+                }),
+                patch.object(ci, 'secure', side_effect=secure),
+                patch.object(release, 'run'),
+                patch.object(release, 'select_identity', return_value='fixture-identity'),
+            ):
+                try:
+                    keychain, identity = ci.signing_setup()
+                    self.assertEqual(imports, [certificate_data])
+                    self.assertEqual(keychain, self.root / 'hermes-signing/release.keychain-db')
+                    self.assertEqual(identity, 'fixture-identity')
+                    self.assertFalse((self.root / 'hermes-signing/identity.p12').exists())
+                finally:
+                    ci.signing_cleanup()
+
+    def test_invalid_signing_export_fails_without_commands_or_secret_disclosure(self):
+        encoded = base64.b64encode(b'fixture').decode('ascii')
+        for value in ('', ' \r\n\t', encoded + '!private-input', encoded + encoded,
+                      encoded[:-1], encoded + '\N{NO-BREAK SPACE}'):
+            with (
+                self.subTest(value=value),
+                patch.dict('os.environ', {
+                    'RUNNER_TEMP': str(self.root),
+                    'MACOS_SIGNING_P12_BASE64': value,
+                }),
+                patch.object(ci, 'secure') as secure,
+                patch.object(release, 'run') as command,
+            ):
+                with self.assertRaisesRegex(ValueError, 'MACOS_SIGNING_P12_BASE64') as error:
+                    ci.sign(self.config, self.work)
+                if value.strip():
+                    self.assertNotIn(value, str(error.exception))
+                secure.assert_not_called()
+                command.assert_not_called()
+                self.assertFalse((self.root / 'hermes-signing').exists())
+
     def test_signing_files_are_removed_even_if_keychain_deletion_fails(self):
         directory = self.root/'hermes-signing'
         directory.mkdir()
