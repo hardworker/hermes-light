@@ -59,7 +59,8 @@ jobs:
               secrets.MACOS_SIGNING_P12_PASSWORD != '' &&
               secrets.APPLE_NOTARY_APPLE_ID != '' &&
               secrets.APPLE_NOTARY_TEAM_ID != '' &&
-              secrets.APPLE_NOTARY_PASSWORD != ''
+              secrets.APPLE_NOTARY_PASSWORD != '' &&
+              secrets.CASK_PUSH_SSH_KEY != ''
             }}
         run: python scripts/ci_release.py check
 
@@ -117,10 +118,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/ci_release.py smoke
 
-      - name: Update the Homebrew cask
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/ci_release.py commit-cask
+      - name: Check out the cask publishing workspace
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .build/cask-publish
+          fetch-depth: 0
+          ssh-key: ${{ secrets.CASK_PUSH_SSH_KEY }}
+
+      - name: Push the verified Homebrew cask
+        working-directory: .build/cask-publish
+        run: |
+          cp "$GITHUB_WORKSPACE/Casks/hermes-light.rb" Casks/hermes-light.rb
+          python scripts/ci_release.py commit-cask
 
       # The certificate action deletes its Keychain in its own post-job cleanup.
       - name: Clean up temporary build and Homebrew files
