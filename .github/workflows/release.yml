@@ -74,20 +74,6 @@ jobs:
           p12-file-base64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
           p12-password: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
 
-      - name: Verify and import the Apple Developer ID intermediate
-        run: |
-          certificate="$RUNNER_TEMP/DeveloperIDG2CA.cer"
-          keychain="$HOME/Library/Keychains/${SIGNING_KEYCHAIN_NAME}.keychain-db"
-
-          curl --fail --silent --show-error \
-            --proto '=https' \
-            --output "$certificate" \
-            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
-
-          security verify-cert -c "$certificate"
-          security import "$certificate" -k "$keychain"
-          rm "$certificate"
-
       - name: Store notarization credentials in the temporary Keychain
         env:
           APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
