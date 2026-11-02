@@ -40,15 +40,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '22'
-          package-manager-cache: false
-
-      - name: Install locked notarization tools
-        run: npm ci --prefix packaging --ignore-scripts --no-audit --no-fund
-
       - name: Validate and check release inputs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,7 +52,7 @@ jobs:
               secrets.APPLE_NOTARY_PASSWORD != ''
             }}
         run: |
-          make test
+          python -m unittest discover -s tests -v
           python scripts/check_repository.py --history
           python scripts/ci_release.py check
 
@@ -91,8 +82,12 @@ jobs:
           APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
           APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
         run: |
+          keychain="$HOME/Library/Keychains/hermes-light-ci.keychain-db"
+          xcrun notarytool store-credentials hermes-light-ci --keychain "$keychain" \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" --team-id "$APPLE_NOTARY_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD" > /dev/null
           python scripts/light_client_release.py notarize \
-            --keychain "$HOME/Library/Keychains/hermes-light-ci.keychain-db" --profile ''
+            --keychain "$keychain" --profile hermes-light-ci
 
       - name: Publish verified release
         env:

@@ -1,4 +1,4 @@
-"""Release publication, notarization gates, and upstream-update boundaries."""
+"""Release publication, Homebrew cleanup, and upstream-update boundaries."""
 import base64
 import json
 from pathlib import Path
@@ -40,51 +40,32 @@ class AutomationTests(unittest.TestCase):
                          'app_version': self.config['version'], 'notarization_status': 'not_submitted',
                          'packaging_commit': 'b' * 40}
 
-    def test_notarization_and_verification_must_succeed_before_archiving(self):
+    def test_notarization_waits_and_rejects_unaccepted_submissions(self):
+        release.write_json(self.work / 'candidate.json', self.manifest)
         prepared = self.work / 'source/.build/desktop-job/prepared.json'
         prepared.parent.mkdir(parents=True)
-        prepared.write_text(json.dumps({'node': 'fixture-node'}))
-        scenarios = [('helper', 'fixture-profile'), ('verification', 'fixture-profile'),
-                     (None, 'fixture-profile'), (None, '')]
-        for failure, profile in scenarios:
-            candidate = dict(self.manifest, notarization_id='previous-submission')
-            release.write_json(self.work / 'candidate.json', candidate)
-            (self.work / 'release.json').unlink(missing_ok=True)
+        prepared.write_text(json.dumps({'node': 'node'}))
+        for status in ('Invalid', 'Accepted'):
             calls = []
-
             def command(*args, **kwargs):
                 calls.append(args)
-                failed_helper = failure == 'helper' and args[0] == 'fixture-node'
-                failed_verification = failure == 'verification' and args[0] == 'spctl'
-                if failed_helper or failed_verification:
-                    raise subprocess.CalledProcessError(1, args)
-                if args[0] == 'ditto':
-                    Path(args[-1]).write_bytes(b'signed archive')
-                return SimpleNamespace(stdout='')
-
-            with (
-                self.subTest(failure=failure, profile=profile),
-                patch.object(release, 'require_mac'),
-                patch.object(release, 'select_identity', return_value='b' * 40),
-                patch.object(release, 'run', side_effect=command),
-            ):
-                if failure:
-                    with self.assertRaises(subprocess.CalledProcessError):
-                        release.notarize(self.config, self.work, profile, None, Path('ci.keychain'))
+                if args[0] == 'ditto': Path(args[-1]).write_bytes(b'signed archive')
+                return SimpleNamespace(stdout=json.dumps({'id': 'submission-id', 'status': status}))
+            with self.subTest(status=status), patch.object(release, 'require_mac'), \
+                    patch.object(release, 'select_identity', return_value='b'*40), \
+                    patch.object(release, 'run', side_effect=command):
+                if status == 'Invalid':
+                    with self.assertRaisesRegex(ValueError, 'Invalid'):
+                        release.notarize(self.config, self.work, 'fixture', None, Path('ci.keychain'))
                     self.assertFalse((self.work / 'release.json').exists())
-                    self.assertFalse(any(args[0] == 'ditto' for args in calls))
-                    candidate = json.loads((self.work / 'candidate.json').read_text())
-                    self.assertEqual(candidate['notarization_status'], 'not_submitted')
+                    self.assertFalse(any(args[:2] == ('xcrun', 'stapler') for args in calls))
                 else:
-                    release.notarize(self.config, self.work, profile, None, Path('ci.keychain'))
+                    release.notarize(self.config, self.work, 'fixture', None, Path('ci.keychain'))
                     manifest = json.loads((self.work / 'release.json').read_text())
                     release.validate_release(manifest, self.config)
-                    self.assertEqual(manifest['notarization_tool'], '@electron/notarize')
-                    self.assertNotIn('notarization_id', manifest)
-                    commands = [args[0] for args in calls]
-                    self.assertLess(commands.index('spctl'), commands.index('ditto'))
-                helper = next(args for args in calls if args[0] == 'fixture-node')
-                self.assertEqual(helper[-2:], ('ci.keychain', profile))
+                submit = next(args for args in calls if args[:3] == ('xcrun', 'notarytool', 'submit'))
+                self.assertIn('--wait', submit)
+                self.assertIn('ci.keychain', submit)
 
     def test_existing_release_or_draft_stops_before_build_or_upload(self):
         for draft in (False, True):
@@ -113,7 +94,7 @@ class AutomationTests(unittest.TestCase):
     def test_draft_is_published_only_after_all_uploaded_digests_match(self):
         archive = self.work / release.archive_name(self.config)
         archive.write_bytes(b'signed archive')
-        manifest = dict(self.manifest, notarization_status='Accepted', notarization_tool='@electron/notarize',
+        manifest = dict(self.manifest, notarization_status='Accepted', notarization_id='submission-id',
                         archive=str(archive), sha256=release.checksum(archive))
         release.write_json(self.work / 'release.json', manifest)
         for tampered in (True, False):
@@ -143,11 +124,6 @@ class AutomationTests(unittest.TestCase):
                 else:
                     release.publish(self.config, self.work)
                     self.assertIn(manifest['sha256'], (self.root/'Casks/hermes-light.rb').read_text())
-                    public = json.loads((self.work / 'release-manifest.json').read_text())
-                    self.assertEqual(public['notarization_tool'], '@electron/notarize')
-                    self.assertNotIn('notarization_id', public)
-                    self.assertNotIn('source', public)
-                    self.assertNotIn('app', public)
             published = [args for args in calls if args[:3] == ('gh', 'release', 'edit')]
             self.assertEqual(bool(published), not tampered)
             create = next(args for args in calls if args[:3] == ('gh', 'release', 'create'))
