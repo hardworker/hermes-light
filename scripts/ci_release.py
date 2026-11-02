@@ -26,7 +26,22 @@ def secure(*args):
         raise ValueError(f'{Path(str(args[0])).name} failed; signing output withheld')
 
 
+def decode_signing_certificate(encoded):
+    try:
+        # Base64 exports and clipboard pastes can include wrapping or a final newline.
+        compact = b''.join(encoded.encode('ascii').split())
+        certificate = base64.b64decode(compact, validate=True)
+    except ValueError:
+        raise ValueError(
+            'MACOS_SIGNING_P12_BASE64 is invalid Base64; re-export the signing identity'
+        ) from None
+    if not certificate:
+        raise ValueError('MACOS_SIGNING_P12_BASE64 must contain a nonempty signing export')
+    return certificate
+
+
 def signing_setup():
+    certificate_data = decode_signing_certificate(os.environ['MACOS_SIGNING_P12_BASE64'])
     directory = Path(os.environ['RUNNER_TEMP']) / 'hermes-signing'
     directory.mkdir(mode=0o700)
     keychain = directory / 'release.keychain-db'
@@ -35,7 +50,7 @@ def signing_setup():
 
     # sign() owns cleanup, including failures during credential import.
     certificate = directory / 'identity.p12'
-    certificate.write_bytes(base64.b64decode(os.environ['MACOS_SIGNING_P12_BASE64'], validate=True))
+    certificate.write_bytes(certificate_data)
     certificate.chmod(0o600)
     secure('security', 'create-keychain', '-p', password, keychain)
     secure('security', 'set-keychain-settings', '-lut', '7200', keychain)
