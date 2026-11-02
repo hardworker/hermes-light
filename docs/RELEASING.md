@@ -14,9 +14,17 @@ then review and merge normally.
 
 A source-pin change on `main` starts **Release Hermes Light** on the ARM64
 `xcode-27` runner: build, sign, notarize, verify the draft's uploaded digests,
-publish, test Homebrew installation, and commit the cask. Releases run one at
-a time and refuse to replace existing tags or assets. Cask commits do not
-start another release.
+publish, test Homebrew installation, and open a cask PR on
+`automation/cask-update`. Review and merge that PR to update the Homebrew tap;
+the release job does not push to protected `main`. Releases run one at a time
+and refuse to replace existing tags or assets. Cask commits do not start
+another release.
+
+The cask PR uses `peter-evans/create-pull-request` and changes only
+`Casks/hermes-light.rb`. The release job explicitly starts **Validate client
+release tooling** on its branch because `GITHUB_TOKEN`-created PRs do not
+automatically trigger pull-request workflows. It never approves or merges
+the cask PR.
 
 ## Signing setup
 
@@ -68,13 +76,17 @@ If publication succeeded but the cask update failed, fix the reported problem
 and recover the cask from the published metadata:
 
 ```sh
+git switch -c update-hermes-light-cask origin/main
 make cask
 git add Casks/hermes-light.rb
 git commit -m "Update Hermes Light cask"
-git push
+git push --set-upstream origin HEAD
+gh pr create --base main --fill
 ```
 
-Review the cask before committing and verify installation after pushing.
+Review and merge the cask PR; verify installation after merging. An existing
+published release does not need a rebuild or a packaging revision bump just
+to recover its cask. Do not rerun the full release workflow for that case.
 GitHub's normal workflow failure notifications report problems.
 
 ## Local commands

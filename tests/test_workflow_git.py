@@ -152,18 +152,23 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertEqual(self.remote_head(upstream.BRANCH), self.base)
         self.assertFalse(self.pr_writes)
 
-    def test_cask_commit_keeps_unrelated_main_changes(self):
+    def test_cask_commit_preserves_current_main_and_leaves_publication_to_the_pr(self):
         (self.checkout / 'README.md').write_text('new main documentation\n')
         self.git('commit', '-am', 'Update documentation')
         self.git('push', 'origin', 'main')
         self.git('switch', '--detach', self.base)
         (self.checkout / 'Casks/hermes-light.rb').write_text('updated cask\n')
-        ci.commit_cask(self.config)
-        self.assertEqual(self.remote_file('main', 'README.md'), 'new main documentation')
-        self.assertEqual(self.remote_file('main', 'Casks/hermes-light.rb'), 'updated cask')
         original = self.remote_head('main')
         ci.commit_cask(self.config)
+        self.assertEqual(self.remote_file('main', 'README.md'), 'new main documentation')
+        self.assertEqual((self.checkout / 'README.md').read_text(), 'new main documentation\n')
+        self.assertEqual(self.git('rev-parse', 'HEAD^'), original)
+        self.assertEqual(self.remote_file('main', 'Casks/hermes-light.rb'), 'original cask')
+        self.assertEqual((self.checkout / 'Casks/hermes-light.rb').read_text(), 'updated cask\n')
+        self.assertEqual(self.git('diff', 'origin/main', 'HEAD', '--name-only'), 'Casks/hermes-light.rb')
+        ci.commit_cask(self.config)
         self.assertEqual(self.remote_head('main'), original)
+        self.assertFalse(self.pr_writes)
 
     def test_cask_commit_refuses_a_newer_main_pin(self):
         release.write_json(self.checkout / 'packaging/source.json', self.updated)

@@ -102,6 +102,7 @@ def sign(config, work):
 
 
 def commit_cask(config):
+    """Commit the verified cask locally; the workflow opens a PR for publication."""
     cask = release.ROOT / 'Casks/hermes-light.rb'
     content = cask.read_text()
     release.run('git', 'fetch', 'origin', 'main')
@@ -128,8 +129,6 @@ def commit_cask(config):
         'git', 'commit', '-m',
         f"Release Hermes Light {config['version']} revision {config['revision']}"
     )
-    release.run('gh', 'auth', 'setup-git')
-    release.run('git', 'push', 'origin', 'HEAD:main')
 
 
 def smoke(config):

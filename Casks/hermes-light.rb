@@ -1,8 +1,8 @@
 cask "hermes-light" do
-  version "0.22.5,1"
-  sha256 "6356a805cc710304d380ee6e10def1607a44c104c09ccd5f7edf31fe3bf110a5"
+  version "0.22.5,2"
+  sha256 "74476adfffd1baf6275da3ab9062487fe3a79fd0a7b46ff9f871320ac5c97de0"
 
-  url "https://github.com/hardworker/hermes-light/releases/download/hermes-light-v0.22.5-r1/HermesLight-0.22.5-r1-macos-arm64.zip"
+  url "https://github.com/hardworker/hermes-light/releases/download/hermes-light-v0.22.5-r2/HermesLight-0.22.5-r2-macos-arm64.zip"
   name "Hermes Light"
   desc "Remote Hermes client without a local agent runtime"
   homepage "https://github.com/hardworker/hermes-light"

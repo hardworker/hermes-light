@@ -25,8 +25,11 @@ jobs:
     timeout-minutes: 120
 
     permissions:
-      # Publish the release and push the updated Homebrew cask.
+      # Publish the release and propose the verified Homebrew cask for review.
       contents: write
+      pull-requests: write
+      # GITHUB_TOKEN-created PRs need an explicit validation dispatch.
+      actions: write
 
     steps:
       - name: Check out the approved source
@@ -73,12 +76,41 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/light_client_release.py publish
 
-      - name: Test Homebrew installation and update the cask
+      - name: Test Homebrew installation
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          python scripts/ci_release.py smoke
-          python scripts/ci_release.py commit-cask
+        run: python scripts/ci_release.py smoke
+
+      - name: Prepare the cask commit against current main
+        run: python scripts/ci_release.py commit-cask
+
+      - name: Open a pull request for the verified cask
+        id: cask-pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          base: main
+          branch: automation/cask-update
+          add-paths: Casks/hermes-light.rb
+          commit-message: Update Hermes Light Homebrew cask
+          title: Update Hermes Light Homebrew cask
+          body: |
+            Update the cask for the signed, notarized release verified by this run:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            The published archive passed the Homebrew installation and Gatekeeper checks.
+            Review and merge this PR to update the tap.
+
+      - name: Run validation for the cask pull request
+        if: >-
+          ${{
+            steps.cask-pr.outputs.pull-request-operation == 'created' ||
+            steps.cask-pr.outputs.pull-request-operation == 'updated'
+          }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CASK_BRANCH: ${{ steps.cask-pr.outputs.pull-request-branch }}
+        run: gh workflow run validate.yml --ref "$CASK_BRANCH"
 
       - name: Clean up signing credentials and temporary files
         if: always()
