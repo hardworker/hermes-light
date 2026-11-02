@@ -128,7 +128,6 @@ def commit_cask(config):
         'git', 'commit', '-m',
         f"Release Hermes Light {config['version']} revision {config['revision']}"
     )
-    release.run('gh', 'auth', 'setup-git')
     release.run('git', 'push', 'origin', 'HEAD:main')
 
 

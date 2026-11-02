@@ -27,9 +27,11 @@ allows deploy keys to bypass its rules; repository admins retain their
 existing bypass. GitHub rejects the built-in GitHub Actions app as a bypass
 actor for this repository, so `GITHUB_TOKEN` alone cannot perform this push.
 
-The workflow loads the deploy key through `webfactory/ssh-agent` only after
-the Homebrew installation test passes. The action stops its agent during
-post-job cleanup. GitHub API operations continue to use `GITHUB_TOKEN`.
+After the Homebrew installation test passes, `actions/checkout` creates a
+separate cask publishing checkout at the run's original commit. It handles
+the deploy key, GitHub host verification, and credential cleanup. The job
+copies the verified cask into that checkout and pushes it after rechecking
+the current source pin. GitHub API operations continue to use `GITHUB_TOKEN`.
 
 To rotate the key, add a new write deploy key under **Settings → Deploy
 keys**, replace the `CASK_PUSH_SSH_KEY` environment secret, then remove the

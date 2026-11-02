@@ -79,20 +79,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/ci_release.py smoke
 
-      - name: Load the cask publishing deploy key
-        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+      - name: Check out the cask publishing workspace
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ssh-private-key: ${{ secrets.CASK_PUSH_SSH_KEY }}
-          log-public-key: false
+          ref: ${{ github.sha }}
+          path: .build/cask-publish
+          fetch-depth: 0
+          ssh-key: ${{ secrets.CASK_PUSH_SSH_KEY }}
 
       - name: Push the verified Homebrew cask
-        env:
-          GH_TOKEN: ${{ github.token }}
+        working-directory: .build/cask-publish
         run: |
-          mkdir -p "$HOME/.ssh"
-          gh api meta --jq '.ssh_keys[] | "github.com " + .' >> "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
-          git remote set-url origin "ssh://git@${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}.git"
+          cp "$GITHUB_WORKSPACE/Casks/hermes-light.rb" Casks/hermes-light.rb
           python scripts/ci_release.py commit-cask
 
       - name: Clean up signing credentials and temporary files
