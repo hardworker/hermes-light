@@ -1,4 +1,4 @@
-"""Release publication, signing cleanup, and upstream-update boundaries."""
+"""Release publication, Homebrew cleanup, and upstream-update boundaries."""
 import base64
 import json
 from pathlib import Path
@@ -131,93 +131,14 @@ class AutomationTests(unittest.TestCase):
             self.assertIn('--draft', create)
             self.assertFalse(any('--clobber' in args for args in calls))
 
-    def test_failed_import_or_notarization_still_cleans_signing_credentials(self):
-        for stage in ('setup', 'notarize'):
-            with self.subTest(stage=stage), \
-                    patch.object(ci, 'signing_setup', side_effect=ValueError('setup failed') if stage=='setup' else None,
-                                 return_value=(Path('ci.keychain'), 'identity')), \
-                    patch.object(release, 'notarize', side_effect=ValueError('notarize failed')), \
-                    patch.object(ci, 'signing_cleanup') as cleanup:
-                with self.assertRaises(ValueError):
-                    ci.sign(self.config, self.work)
-                cleanup.assert_called_once()
-
-    def test_signing_import_accepts_wrapped_base64_and_preserves_export_bytes(self):
-        certificate_data = b'PKCS12 fixture bytes, never a real signing identity'
-        encoded = base64.b64encode(certificate_data).decode('ascii')
-        wrapped = '\r\n'.join(encoded[index:index + 16] for index in range(0, len(encoded), 16))
-        for value in (encoded, encoded + '\n', ' \t' + wrapped + '\r\n'):
-            imports = []
-
-            def secure(*args):
-                if args[:2] == ('security', 'import'):
-                    certificate = Path(args[2])
-                    imports.append(certificate.read_bytes())
-                    self.assertEqual(certificate.stat().st_mode & 0o777, 0o600)
-
-            with (
-                self.subTest(value=value),
-                patch.dict('os.environ', {
-                    'RUNNER_TEMP': str(self.root),
-                    'MACOS_SIGNING_P12_BASE64': value,
-                    'MACOS_SIGNING_P12_PASSWORD': 'fixture',
-                    'APPLE_NOTARY_APPLE_ID': 'fixture',
-                    'APPLE_NOTARY_TEAM_ID': 'fixture',
-                    'APPLE_NOTARY_PASSWORD': 'fixture',
-                }),
-                patch.object(ci, 'secure', side_effect=secure),
-                patch.object(release, 'run'),
-                patch.object(release, 'select_identity', return_value='fixture-identity'),
-            ):
-                try:
-                    keychain, identity = ci.signing_setup()
-                    self.assertEqual(imports, [certificate_data])
-                    self.assertEqual(keychain, self.root / 'hermes-signing/release.keychain-db')
-                    self.assertEqual(identity, 'fixture-identity')
-                    self.assertFalse((self.root / 'hermes-signing/identity.p12').exists())
-                finally:
-                    ci.signing_cleanup()
-
-    def test_invalid_signing_export_fails_without_commands_or_secret_disclosure(self):
-        encoded = base64.b64encode(b'fixture').decode('ascii')
-        for value in ('', ' \r\n\t', encoded + '!private-input', encoded + encoded,
-                      encoded[:-1], encoded + '\N{NO-BREAK SPACE}'):
-            with (
-                self.subTest(value=value),
-                patch.dict('os.environ', {
-                    'RUNNER_TEMP': str(self.root),
-                    'MACOS_SIGNING_P12_BASE64': value,
-                }),
-                patch.object(ci, 'secure') as secure,
-                patch.object(release, 'run') as command,
-            ):
-                with self.assertRaisesRegex(ValueError, 'MACOS_SIGNING_P12_BASE64') as error:
-                    ci.sign(self.config, self.work)
-                if value.strip():
-                    self.assertNotIn(value, str(error.exception))
-                secure.assert_not_called()
-                command.assert_not_called()
-                self.assertFalse((self.root / 'hermes-signing').exists())
-
-    def test_signing_files_are_removed_even_if_keychain_deletion_fails(self):
-        directory = self.root/'hermes-signing'
-        directory.mkdir()
-        (directory/'release.keychain-db').write_bytes(b'fixture')
-        (directory/'identity.p12').write_bytes(b'fixture')
-        with patch.dict('os.environ', RUNNER_TEMP=str(self.root)), \
-                patch.object(ci, 'secure', side_effect=ValueError('delete failed')):
-            with self.assertRaises(ValueError): ci.signing_cleanup()
-        self.assertFalse(directory.exists())
-
-    def test_cleanup_attempts_every_stage_after_an_earlier_failure(self):
-        for stage in ('signing', 'smoke'):
-            self.work.mkdir(exist_ok=True)
-            with self.subTest(stage=stage), patch.object(release, 'DEFAULT_WORK', self.work), \
-                    patch.object(ci, 'signing_cleanup', side_effect=ValueError('failed') if stage=='signing' else None), \
-                    patch.object(ci, 'smoke_cleanup', side_effect=ValueError('failed') if stage=='smoke' else None) as smoke:
-                with self.assertRaises(ValueError): ci.clean(self.config)
-                smoke.assert_called_once()
-            self.assertFalse(self.work.exists())
+    def test_build_files_are_removed_even_if_homebrew_cleanup_fails(self):
+        with (
+            patch.object(release, 'DEFAULT_WORK', self.work),
+            patch.object(ci, 'smoke_cleanup', side_effect=ValueError('cleanup failed')),
+        ):
+            with self.assertRaisesRegex(ValueError, 'cleanup failed'):
+                ci.clean(self.config)
+        self.assertFalse(self.work.exists())
 
     def test_failed_homebrew_verification_removes_only_its_app_and_cache(self):
         tap = self.root / 'tap'

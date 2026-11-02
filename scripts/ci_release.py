@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Release-runner signing, Homebrew verification, and cask publication."""
+"""Release preflight, Homebrew verification, and cask publication."""
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 from pathlib import Path
-import secrets
 import shutil
 import subprocess
 
@@ -18,87 +16,6 @@ def check(config):
     if os.environ.get('RELEASE_SECRETS_CONFIGURED') != 'true':
         raise ValueError('Configure release environment secrets using docs/RELEASING.md')
     release.assert_new_release(config)
-
-
-def secure(*args):
-    result = subprocess.run(list(map(str, args)), text=True, capture_output=True)
-    if result.returncode:
-        raise ValueError(f'{Path(str(args[0])).name} failed; signing output withheld')
-
-
-def decode_signing_certificate(encoded):
-    try:
-        # Base64 exports and clipboard pastes can include wrapping or a final newline.
-        compact = b''.join(encoded.encode('ascii').split())
-        certificate = base64.b64decode(compact, validate=True)
-    except ValueError:
-        raise ValueError(
-            'MACOS_SIGNING_P12_BASE64 is invalid Base64; re-export the signing identity'
-        ) from None
-    if not certificate:
-        raise ValueError('MACOS_SIGNING_P12_BASE64 must contain a nonempty signing export')
-    return certificate
-
-
-def signing_setup():
-    certificate_data = decode_signing_certificate(os.environ['MACOS_SIGNING_P12_BASE64'])
-    directory = Path(os.environ['RUNNER_TEMP']) / 'hermes-signing'
-    directory.mkdir(mode=0o700)
-    keychain = directory / 'release.keychain-db'
-    password = secrets.token_urlsafe(32)
-    print(f'::add-mask::{password}')
-
-    # sign() owns cleanup, including failures during credential import.
-    certificate = directory / 'identity.p12'
-    certificate.write_bytes(certificate_data)
-    certificate.chmod(0o600)
-    secure('security', 'create-keychain', '-p', password, keychain)
-    secure('security', 'set-keychain-settings', '-lut', '7200', keychain)
-    secure('security', 'unlock-keychain', '-p', password, keychain)
-    secure(
-        'security', 'import', certificate, '-P', os.environ['MACOS_SIGNING_P12_PASSWORD'],
-        '-k', keychain, '-T', '/usr/bin/codesign'
-    )
-    certificate.unlink()
-
-    intermediate = directory / 'intermediate.cer'
-    release.run(
-        'curl', '--fail', '--silent', '--show-error', '--proto', '=https',
-        '--output', intermediate, 'https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer'
-    )
-    release.run('security', 'verify-cert', '-c', intermediate)
-    release.run('security', 'import', intermediate, '-k', keychain)
-    secure(
-        'security', 'set-key-partition-list', '-S', 'apple-tool:,apple:,codesign:',
-        '-s', '-k', password, keychain
-    )
-    identity = release.select_identity(keychain=keychain)
-    secure(
-        'xcrun', 'notarytool', 'store-credentials', 'hermes-light-ci', '--keychain', keychain,
-        '--apple-id', os.environ['APPLE_NOTARY_APPLE_ID'],
-        '--team-id', os.environ['APPLE_NOTARY_TEAM_ID'],
-        '--password', os.environ['APPLE_NOTARY_PASSWORD']
-    )
-    return keychain, identity
-
-
-def signing_cleanup():
-    directory = Path(os.environ['RUNNER_TEMP']) / 'hermes-signing'
-    keychain = directory / 'release.keychain-db'
-    try:
-        if keychain.exists():
-            secure('security', 'delete-keychain', keychain)
-    finally:
-        if directory.exists():
-            shutil.rmtree(directory)
-
-
-def sign(config, work):
-    try:
-        keychain, identity = signing_setup()
-        release.notarize(config, work, 'hermes-light-ci', identity, keychain)
-    finally:
-        signing_cleanup()
 
 
 def commit_cask(config):
@@ -177,25 +94,19 @@ def smoke_cleanup(config):
 
 def clean(config):
     try:
-        signing_cleanup()
+        smoke_cleanup(config)
     finally:
-        try:
-            smoke_cleanup(config)
-        finally:
-            if release.DEFAULT_WORK.exists():
-                shutil.rmtree(release.DEFAULT_WORK)
+        if release.DEFAULT_WORK.exists():
+            shutil.rmtree(release.DEFAULT_WORK)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['check', 'sign', 'smoke', 'commit-cask', 'clean'])
+    parser.add_argument('action', choices=['check', 'smoke', 'commit-cask', 'clean'])
     args = parser.parse_args()
     config = release.read_config()
-    work = release.DEFAULT_WORK / release.release_tag(config)
     if args.action == 'check':
         check(config)
-    elif args.action == 'sign':
-        sign(config, work)
     elif args.action == 'smoke':
         smoke(config)
     elif args.action == 'commit-cask':

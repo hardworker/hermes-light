@@ -24,6 +24,10 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 120
 
+    env:
+      SIGNING_KEYCHAIN_NAME: hermes-light-ci
+      NOTARY_PROFILE: hermes-light-ci
+
     permissions:
       # Publish the release and push the updated Homebrew cask.
       contents: write
@@ -40,7 +44,13 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Validate and check release inputs
+      - name: Run release tooling tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check repository history for sensitive data
+        run: python scripts/check_repository.py --history
+
+      - name: Validate release inputs
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SECRETS_CONFIGURED: >-
@@ -52,29 +62,58 @@ jobs:
               secrets.APPLE_NOTARY_PASSWORD != '' &&
               secrets.CASK_PUSH_SSH_KEY != ''
             }}
-        run: |
-          python -m unittest discover -s tests -v
-          python scripts/check_repository.py --history
-          python scripts/ci_release.py check
+        run: python scripts/ci_release.py check
 
       - name: Build unsigned Light client
         run: python scripts/light_client_release.py build
 
-      - name: Sign, notarize, and verify
+      - name: Import signing certificate into a temporary Keychain
+        uses: Apple-Actions/import-codesign-certs@288b8ec97b82c66b6f2a6baaf7acc8dfbcbe331c # v7.2.0
+        with:
+          keychain: ${{ env.SIGNING_KEYCHAIN_NAME }}
+          p12-file-base64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          p12-password: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+
+      - name: Verify and import the Apple Developer ID intermediate
+        run: |
+          certificate="$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          keychain="$HOME/Library/Keychains/${SIGNING_KEYCHAIN_NAME}.keychain-db"
+
+          curl --fail --silent --show-error \
+            --proto '=https' \
+            --output "$certificate" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+
+          security verify-cert -c "$certificate"
+          security import "$certificate" -k "$keychain"
+          rm "$certificate"
+
+      - name: Store notarization credentials in the temporary Keychain
         env:
-          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
-          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
           APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
           APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
           APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
-        run: python scripts/ci_release.py sign
+        run: |
+          keychain="$HOME/Library/Keychains/${SIGNING_KEYCHAIN_NAME}.keychain-db"
+
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --keychain "$keychain" \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" \
+            --team-id "$APPLE_NOTARY_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD" > /dev/null
+
+      - name: Sign, notarize, and verify the Light client
+        run: |
+          python scripts/light_client_release.py notarize \
+            --keychain "$HOME/Library/Keychains/${SIGNING_KEYCHAIN_NAME}.keychain-db" \
+            --profile "$NOTARY_PROFILE"
 
       - name: Publish verified release
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/light_client_release.py publish
 
-      - name: Test Homebrew installation
+      - name: Verify Homebrew installation
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/ci_release.py smoke
@@ -93,6 +132,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/Casks/hermes-light.rb" Casks/hermes-light.rb
           python scripts/ci_release.py commit-cask
 
-      - name: Clean up signing credentials and temporary files
+      # The certificate action deletes its Keychain in its own post-job cleanup.
+      - name: Clean up temporary build and Homebrew files
         if: always()
         run: python scripts/ci_release.py clean

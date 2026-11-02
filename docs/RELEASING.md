@@ -62,9 +62,15 @@ through **Settings → Environments → release**:
    | `APPLE_NOTARY_TEAM_ID` | Your Team ID |
    | `APPLE_NOTARY_PASSWORD` | A new CI-only app-specific password from [Apple Account](https://account.apple.com) |
 
-Keep secret values out of source files, PRs, and chat. CI imports credentials
-into a temporary Keychain after building, removes them after signing, and
-cleans its test app, dedicated Homebrew cache, and build files on failure too.
+Keep secret values out of source files, PRs, and chat. CI uses
+[Apple-Actions/import-codesign-certs](https://github.com/Apple-Actions/import-codesign-certs)
+to import the signing identity after building and delete its temporary
+Keychain in post-job cleanup, including after failures. The existing five
+secrets are reused. Apple's `notarytool` stores the notarization credentials
+in that Keychain; the existing submission, acceptance, and stapling checks
+remain in place. CI also cleans its test app, dedicated Homebrew cache, and
+build files on failure.
+
 After the first successful release, delete the temporary export:
 
 ```sh
