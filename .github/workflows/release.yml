@@ -49,7 +49,8 @@ jobs:
               secrets.MACOS_SIGNING_P12_PASSWORD != '' &&
               secrets.APPLE_NOTARY_APPLE_ID != '' &&
               secrets.APPLE_NOTARY_TEAM_ID != '' &&
-              secrets.APPLE_NOTARY_PASSWORD != ''
+              secrets.APPLE_NOTARY_PASSWORD != '' &&
+              secrets.CASK_PUSH_SSH_KEY != ''
             }}
         run: |
           python -m unittest discover -s tests -v
@@ -73,11 +74,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/light_client_release.py publish
 
-      - name: Test Homebrew installation and update the cask
+      - name: Test Homebrew installation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_release.py smoke
+
+      - name: Load the cask publishing deploy key
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.CASK_PUSH_SSH_KEY }}
+          log-public-key: false
+
+      - name: Push the verified Homebrew cask
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python scripts/ci_release.py smoke
+          mkdir -p "$HOME/.ssh"
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' >> "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          git remote set-url origin "ssh://git@${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}.git"
           python scripts/ci_release.py commit-cask
 
       - name: Clean up signing credentials and temporary files

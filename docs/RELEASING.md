@@ -18,6 +18,24 @@ publish, test Homebrew installation, and commit the cask. Releases run one at
 a time and refuse to replace existing tags or assets. Cask commits do not
 start another release.
 
+## Cask publishing
+
+The release job pushes the verified cask directly to `main` using the
+**Hermes Light release cask push** write deploy key. Its private key is stored
+as `CASK_PUSH_SSH_KEY` in the `release` environment. The main-branch ruleset
+allows deploy keys to bypass its rules; repository admins retain their
+existing bypass. GitHub rejects the built-in GitHub Actions app as a bypass
+actor for this repository, so `GITHUB_TOKEN` alone cannot perform this push.
+
+The workflow loads the deploy key through `webfactory/ssh-agent` only after
+the Homebrew installation test passes. The action stops its agent during
+post-job cleanup. GitHub API operations continue to use `GITHUB_TOKEN`.
+
+To rotate the key, add a new write deploy key under **Settings → Deploy
+keys**, replace the `CASK_PUSH_SSH_KEY` environment secret, then remove the
+old deploy key while releases are idle. Deploy-key bypass applies to all
+deploy keys on this repository; keep write keys limited to release tooling.
+
 ## Signing setup
 
 Create a `release` GitHub environment restricted to `main` and add its secrets
