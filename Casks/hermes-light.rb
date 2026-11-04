@@ -1,8 +1,8 @@
 cask "hermes-light" do
-  version "0.22.5,3"
-  sha256 "719e06197a931a324a094617af7852c3f56824440553dddaca406e09df0626c3"
+  version "0.22.7,1"
+  sha256 "c6443a57d8d867b5e8ecf397a29e26938fe942392ccb284e94f81c0728c51e67"
 
-  url "https://github.com/hardworker/hermes-light/releases/download/hermes-light-v0.22.5-r3/HermesLight-0.22.5-r3-macos-arm64.zip"
+  url "https://github.com/hardworker/hermes-light/releases/download/hermes-light-v0.22.7-r1/HermesLight-0.22.7-r1-macos-arm64.zip"
   name "Hermes Light"
   desc "Remote Hermes client without a local agent runtime"
   homepage "https://github.com/hardworker/hermes-light"
@@ -10,9 +10,9 @@ cask "hermes-light" do
   depends_on arch: :arm64
   depends_on macos: :ventura
 
-  app "Hermes Light bf0203a.app", target: "Hermes Light.app"
+  app "Hermes Light b200f5b.app", target: "Hermes Light.app"
 
-  uninstall quit: "com.nousresearch.hermes-light-bf0203a"
+  uninstall quit: "com.nousresearch.hermes-light-b200f5b"
 
   caveats "Independent Light build. Updates are distributed through this Homebrew tap."
 end
