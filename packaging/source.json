@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/NousResearch/hermes-agent.git",
-  "tag": "v0.23.1",
-  "commit": "3b421578588243f920886e6fe79a6faa87ea026e",
-  "version": "0.23.1",
+  "tag": "v0.23.3",
+  "commit": "caafe5389ae585ef77387a962aee05b1bcf17029",
+  "version": "0.23.3",
   "revision": 1,
   "target": "darwin-arm64",
   "distribution_repository": "hardworker/hermes-light"
